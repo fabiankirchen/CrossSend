@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Main Screen & Navigation -->
+    <string name="main_toast_preparing_sleepscreen">Preparing lock screen…</string>
+    <string name="main_snackbar_sleepscreen_transferred">Lock screen successfully transferred</string>
+    <string name="main_snackbar_sleepscreen_error">Error transferring lock screen: %1$s</string>
+    <string name="main_action_close_selection">Exit selection</string>
+    <string name="main_selection_count" tools:ignore="PluralsCandidate">%1$d selected</string>
+    <string name="main_selection_none">None</string>
+    <string name="main_selection_all">All</string>
+    <string name="main_action_delete_selected">Delete selected</string>
+    <string name="main_search_hint">Search</string>
+    <string name="main_search_placeholder">Search articles &amp; books…</string>
+    <string name="main_clear_search">Clear search</string>
+    <string name="main_view_list">List view</string>
+    <string name="main_view_grid">Cover grid</string>
+    <string name="main_empty_search_title">No results for \'%1$s\'</string>
+    <string name="main_empty_archive_title">No entries in the 90-day archive yet</string>
+    <string name="main_empty_category_title">No %1$s found</string>
+    <string name="main_empty_search_desc">Try searching with a different term.</string>
+    <string name="main_empty_articles_desc">Use the Share menu in Thunderbird, browsers or tap Plus to add articles &amp; emails.</string>
+    <string name="main_empty_books_desc">Tap Plus to choose an EPUB or PDF file and load it onto your CrossPoint Reader.</string>
+    <string name="main_empty_archive_desc">Read and completed articles from the last 90 days are kept here space-efficiently.</string>
+    <string name="main_toast_resending_article">Downloading article again for the reader…</string>
+    <plurals name="main_dialog_batch_delete_title_archive">
+        <item quantity="one">Permanently delete %1$d entry?</item>
+        <item quantity="other">Permanently delete %1$d entries?</item>
+    </plurals>
+    <plurals name="main_dialog_batch_delete_title_files">
+        <item quantity="one">Delete %1$d file?</item>
+        <item quantity="other">Delete %1$d files?</item>
+    </plurals>
+    <plurals name="main_dialog_batch_delete_msg_archive">
+        <item quantity="one">Do you want to permanently delete the %1$d selected entry from the archive?</item>
+        <item quantity="other">Do you want to permanently delete the %1$d selected entries from the archive?</item>
+    </plurals>
+    <plurals name="main_dialog_batch_delete_msg_files">
+        <item quantity="one">Do you want to delete the %1$d selected file?\n\nFiles on the CrossPoint Reader will be removed during the next sync and kept in the archive for 90 days.</item>
+        <item quantity="other">Do you want to delete the %1$d selected files?\n\nFiles on the CrossPoint Reader will be removed during the next sync and kept in the archive for 90 days.</item>
+    </plurals>
+    <string name="main_dialog_delete_title_archive">Delete from archive?</string>
+    <string name="main_dialog_delete_title_file">Delete file?</string>
+    <string name="main_dialog_delete_msg_archive">Do you want to permanently delete \'%1$s\' from the archive?</string>
+    <string name="main_dialog_delete_msg_file">Do you want to remove \'%1$s\'?\n\nThe file will be removed from the CrossPoint Reader during the next sync and kept in the archive for 90 days.</string>
+    <string name="main_action_delete">Delete</string>
+    <string name="main_action_cancel">Cancel</string>
+    <string name="main_dialog_add_url_title">Add Web Article</string>
+    <string name="main_dialog_add_url_desc">Enter the URL of the article. It will be optimized for E-Ink as EPUB or Original Layout (XTCH):</string>
+    <string name="main_button_in_browser">In Browser</string>
+    <string name="main_button_add">Add</string>
+    <string name="main_dialog_add_note_title">Insert Note / Text</string>
+    <string name="main_label_note_title_optional">Title (optional)</string>
+    <string name="main_label_note_content">Text / Email / Note…</string>
+    <string name="main_button_save">Save</string>
+
+    <!-- Toolbar -->
+    <string name="toolbar_add_content">Add</string>
+    <string name="toolbar_rss_feeds">RSS Feeds</string>
+    <string name="toolbar_device_settings">Device &amp; Connection Settings</string>
+    <string name="toolbar_sync_pending" tools:ignore="PluralsCandidate">Sync (%1$d new)</string>
+    <string name="toolbar_synced_tap">Synced – Tap to reconcile</string>
+    <string name="toolbar_connect_crosspoint">Connect to CrossPoint</string>
+    <string name="toolbar_sheet_title">Add Content</string>
+    <string name="toolbar_action_import_file">Import File (EPUB / PDF / ACSM)</string>
+    <string name="toolbar_action_import_file_desc">Add e-books or documents from storage</string>
+    <string name="toolbar_action_add_url">Enter Web Link</string>
+    <string name="toolbar_action_add_url_desc">Download webpage as E-Ink EPUB or Original Layout (XTCH)</string>
+    <string name="toolbar_action_add_note">Write Quick Note</string>
+    <string name="toolbar_action_add_note_desc">Save text or thoughts directly as an article</string>
+    <string name="toolbar_action_send_sleepscreen">Send Sleep Screen Image</string>
+    <string name="toolbar_action_send_sleepscreen_desc">Transfer image as 1-bit E-Ink lock screen (X4, X3, Boox Picco etc.)</string>
+
+    <!-- Document Cards -->
+    <string name="card_status_synced">On CrossPoint</string>
+    <string name="card_status_pending">Waiting to sync</string>
+    <string name="card_status_uploading">Uploading… %1$d%%</string>
+    <string name="card_status_failed">Error</string>
+    <string name="card_status_deleting">Deleting…</string>
+    <string name="card_status_archived">Archived</string>
+    <string name="card_action_delete">Delete</string>
+    <string name="card_cover_status_synced">On Reader</string>
+    <string name="card_cover_status_pending">Waiting</string>
+    <string name="card_cover_status_deleting">Deleting…</string>
+
+    <!-- Preview Dialog -->
+    <string name="preview_no_text_archive">No preview text stored in archive.</string>
+    <string name="preview_title_archive">Archive Preview</string>
+    <string name="preview_title_format">%1$s Preview</string>
+    <string name="preview_action_resend">Resend to reader</string>
+    <string name="preview_share_article">Share article</string>
+    <string name="preview_share_document">Share document</string>
+    <string name="preview_action_share">Share</string>
+    <string name="preview_by_author">By: %1$s</string>
+    <string name="preview_status_synced">On CrossPoint Reader</string>
+    <string name="preview_status_pending">Waiting to sync</string>
+    <string name="preview_status_failed">Sync failed</string>
+    <string name="preview_status_deleting">Deleting…</string>
+    <string name="preview_status_in_archive">In 90-day archive</string>
+    <string name="preview_label_excerpt">Text Excerpt:</string>
+    <string name="preview_loading_content">Loading content…</string>
+    <string name="preview_no_text_available">No preview text available.</string>
+    <string name="preview_source_format">Source: %1$s</string>
+
+    <!-- WebView Dialog -->
+    <string name="webview_default_title">Web Article</string>
+    <string name="webview_close">Close</string>
+    <string name="webview_import_button">Import article</string>
+    <string name="webview_rerender_xtch_button">Done &amp; re-render</string>
+    <string name="webview_login_hint">Sign in once. Your session will remain saved for future articles.</string>
+    <string name="webview_xtch_session_hint">Accept cookies or sign in — your session stays saved. Tap \"Done &amp; re-render\" once the article is clean.</string>
+    <string name="webview_third_party_cookies">3rd-party cookies</string>
+    <string name="webview_processing_toast">Processing article…</string>
+
+    <!-- Quick Connection Settings Dialog -->
+    <string name="conn_dialog_title">CrossPoint &amp; Wi-Fi Connection</string>
+    <string name="conn_dialog_desc">Adjust the Wi-Fi name (for CrossPoint AP or forks) and your reader\'s WebDAV address:</string>
+    <string name="conn_ssid_label">Wi-Fi Name / SSID (or Prefix)</string>
+    <string name="conn_ssid_placeholder">e.g. CrossPlay, CrossPoint or custom</string>
+    <string name="conn_chip_cross_universal">Cross (Universal)</string>
+    <string name="conn_chip_crossplay">CrossPlay</string>
+    <string name="conn_chip_crosspoint">CrossPoint</string>
+    <string name="conn_url_label">WebDAV URL / IP</string>
+    <string name="conn_url_placeholder">http://crossplay.local or crosspoint.local</string>
+    <string name="conn_scanning_lan">Searching LAN…</string>
+    <string name="conn_scan_lan">Scan local network</string>
+    <string name="conn_chip_ap_ip">192.168.4.1 (AP)</string>
+    <string name="conn_button_connect">Connect</string>
+    <string name="conn_button_cancel">Cancel</string>
+
+    <!-- Original Website Layout (XTCH) & Navigation -->
+    <string name="proc_progress_rendering_layout">Rendering original layout (XTCH)…</string>
+    <string name="proc_error_xtch_failed">Original layout rendering failed.</string>
+    <plurals name="proc_preview_xtch_summary">
+        <item quantity="one">Original Layout (XTCH) · %1$d page · %2$d×%3$d px</item>
+        <item quantity="other">Original Layout (XTCH) · %1$d pages · %2$d×%3$d px</item>
+    </plurals>
+    <string name="proc_preview_xtch_fallback">Original Layout document (XTCH)</string>
+    <string name="main_nav_device">CrossPoint Device</string>
+    <string name="main_nav_archive">Archive</string>
+    <string name="main_filter_all">All</string>
+    <string name="main_filter_articles">Articles</string>
+    <string name="main_filter_books">Books</string>
+    <string name="main_filter_unsynced">Unsent</string>
+    <string name="main_filter_unsynced_count">Unsent (%1$d)</string>
+    <string name="main_empty_library_title">Your library is empty</string>
+    <string name="main_empty_library_desc">Use the Share menu in Thunderbird, browsers, or tap Plus to add articles, books, or notes.</string>
+    <string name="main_empty_unsynced_title">All documents are synced</string>
+    <string name="main_empty_unsynced_desc">There are currently no pending or failed transfers.</string>
+    <string name="archive_title">Archive</string>
+    <plurals name="archive_subtitle_count">
+        <item quantity="one">%1$d entry (90-day archive)</item>
+        <item quantity="other">%1$d entries (90-day archive)</item>
+    </plurals>
+    <string name="archive_cd_back">Back to library</string>
+    <string name="archive_cd_search">Search archive</string>
+    <string name="archive_search_placeholder">Search archived entries…</string>
+    <string name="preview_render_mode_label">Display mode</string>
+    <string name="preview_mode_reader">Reading View (EPUB)</string>
+    <string name="preview_mode_original">Original Layout (XTCH)</string>
+    <string name="preview_mode_switching">Updating format &amp; domain rule…</string>
+    <string name="preview_mode_target_resolution">Target: %1$d×%2$d · %3$s (saved for %4$s)</string>
+    <string name="preview_mode_switch_failed">Could not re-download article in selected mode.</string>
+    <string name="preview_xtch_pages_title">E-Ink Page Preview (%1$d/%2$d)</string>
+    <string name="preview_xtch_prev_page">Previous page</string>
+    <string name="preview_xtch_next_page">Next page</string>
+    <string name="preview_xtch_fullscreen">Fullscreen preview</string>
+    <string name="preview_open_in_app_browser">Open in app browser (Cookies &amp; Login)</string>
+    <string name="preview_rerender_xtch">Re-render layout</string>
+
+    <!-- Local Network Permission & Privacy Notice -->
+    <string name="wifi_error_local_network_permission">Local network permission is required to find and connect to CrossPoint.</string>
+    <string name="settings_section_privacy">About &amp; Privacy Notice</string>
+    <string name="settings_privacy_summary">CrossSend works completely locally without user accounts, analytics, or third-party servers.</string>
+    <string name="settings_privacy_button">View Privacy Notice</string>
+    <string name="settings_privacy_dialog_title">Privacy Notice</string>
+    <string name="settings_privacy_dialog_body">• Local-only storage: Your library, feeds, and domain rules are stored exclusively in a local Room database on your device.\n\n• No tracking or ads: CrossSend contains no telemetry, analytics, crash trackers, or advertising SDKs.\n\n• Cloud backups disabled: Private databases, preferences, and WebView login cookies are excluded from Android cloud and device backups.\n\n• Direct device transfer: Documents and sleep screens are transferred directly to your CrossPoint reader over your local Wi-Fi or reader hotspot without intermediate servers.\n\n• Direct web &amp; RSS fetches: Web articles and RSS feeds are fetched directly via HTTPS from the sources you choose.</string>
+    <string name="settings_privacy_dialog_close">Close</string>
+
+    <!-- Sync Manager -->
+    <string name="sync_error_already_running">Sync is already running.</string>
+    <string name="sync_status_checking_connection">Checking connection to CrossPoint…</string>
+    <string name="sync_status_unreachable">CrossPoint unreachable</string>
+    <string name="sync_error_webdav_unreachable">CrossPoint WebDAV server is unreachable.</string>
+    <string name="sync_status_creating_dirs">Creating directories on reader…</string>
+    <string name="sync_status_deleting_files">Deleting removed files on reader…</string>
+    <string name="sync_status_uploading_files">Uploading new files…</string>
+    <string name="sync_status_sending_file">Sending %1$s…</string>
+    <string name="sync_error_upload_failed">Upload failed</string>
+    <string name="sync_status_checking_read">Checking read articles…</string>
+    <string name="sync_status_syncing_manifest">Syncing library manifest…</string>
+    <string name="sync_status_completed">Sync completed</string>
+    <string name="sync_error_unknown">Unknown synchronization error.</string>
+</resources>

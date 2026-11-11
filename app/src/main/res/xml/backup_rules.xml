@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="database" path="crosssend_database" />
+    <exclude domain="database" path="crosssend_database-wal" />
+    <exclude domain="database" path="crosssend_database-shm" />
+    <exclude domain="sharedpref" path="crosspoint_prefs.xml" />
+    <exclude domain="sharedpref" path="crosssend_prefs.xml" />
+    <exclude domain="root" path="app_webview" />
+    <exclude domain="file" path="library" />
+    <exclude domain="file" path="debug_dumps" />
+</full-backup-content>

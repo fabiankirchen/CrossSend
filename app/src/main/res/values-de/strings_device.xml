@@ -1,0 +1,186 @@
+<resources>
+    <!-- Wi-Fi Manager Strings -->
+    <string name="wifi_error_android_10">WifiNetworkSpecifier benötigt mindestens Android 10.</string>
+    <string name="wifi_error_connection">Verbindungsfehler</string>
+
+    <!-- Toasts and status messages -->
+    <string name="dev_invalid_plugin_name">Ungültiger Plugin-Name</string>
+    <string name="dev_plugin_installed_success">„%1$s“ erfolgreich installiert!</string>
+    <string name="dev_plugin_install_failed">Installation von „%1$s“ fehlgeschlagen</string>
+    <string name="dev_plugin_install_error">Fehler bei Installation: %1$s</string>
+    <string name="dev_plugin_status_toggled">%1$s %2$s</string>
+    <string name="dev_plugin_enabled">aktiviert</string>
+    <string name="dev_plugin_disabled">deaktiviert</string>
+    <string name="dev_plugins_folder_ready">Ordner /plugins auf SD-Karte bereit!</string>
+    <string name="dev_plugins_folder_create_failed">Konnte Ordner /plugins nicht erstellen</string>
+    <string name="dev_file_upload_success">„%1$s“ erfolgreich hochgeladen!</string>
+    <string name="dev_file_upload_failed">Upload von „%1$s“ fehlgeschlagen</string>
+    <string name="dev_file_upload_error">Fehler beim Upload: %1$s</string>
+    <string name="dev_file_downloading">Lade „%1$s“ herunter…</string>
+    <string name="dev_file_download_saved">„%1$s“ in Downloads/CrossPoint gespeichert!</string>
+    <string name="dev_file_download_save_failed">Konnte nicht im Downloads-Ordner gespeichert werden</string>
+    <string name="dev_file_download_failed">Download von „%1$s“ fehlgeschlagen</string>
+    <string name="dev_file_download_error">Fehler beim Download: %1$s</string>
+    <string name="dev_setting_saved">%1$s gespeichert</string>
+    <string name="dev_setting_save_error">Fehler beim Speichern: %1$s</string>
+    <string name="dev_settings_saved">Einstellungen gespeichert</string>
+    <string name="dev_settings_save_failed">Fehler beim Speichern</string>
+    <string name="dev_item_deleted">„%1$s“ gelöscht</string>
+    <string name="dev_delete_failed">Löschen fehlgeschlagen</string>
+    <string name="dev_invalid_json">Ungültiges JSON</string>
+
+    <!-- Top Bar &amp; Navigation -->
+    <string name="dev_title_sd_card">SD-Karte</string>
+    <string name="dev_title_device_settings">Geräte-Einstellungen</string>
+    <string name="dev_title_plugin_store">Plugin-Store</string>
+    <string name="dev_title_plugin_config">Plugin-Einstellungen · %1$s</string>
+    <string name="dev_title_store_catalog">Offizieller Katalog · itsthisjustin/sd-plugins</string>
+    <string name="dev_title_web_ui">CrossPoint Web-UI</string>
+    <string name="dev_action_back">Zurück</string>
+    <string name="dev_action_refresh">Aktualisieren</string>
+    <string name="dev_action_reload_plugin">Plugin neu laden</string>
+    <string name="dev_action_refresh_catalog">Katalog aktualisieren</string>
+
+    <!-- Floating Action Button -->
+    <string name="dev_upload_file">Datei hochladen</string>
+    <string name="dev_uploading">Lädt hoch…</string>
+
+    <!-- Connection Card -->
+    <string name="dev_not_connected_title">Nicht mit CrossPoint verbunden</string>
+    <string name="dev_not_connected_desc">Wähle eine Verbindungsmethode für dein Heimnetz-WLAN oder den mobilen Hotspot:</string>
+    <string name="dev_status_searching_lan">Suche CrossPoint im Heimnetz (LAN)…</string>
+    <string name="dev_status_connecting_hotspot">Verbinde mit CrossPoint Hotspot…</string>
+    <string name="dev_btn_cancel">Abbrechen</string>
+    <string name="dev_btn_auto_connect">Automatisch verbinden (Heimnetz / Hotspot)</string>
+    <string name="dev_btn_direct_hotspot">Direkt Hotspot-Popup öffnen (Unterwegs)</string>
+    <string name="dev_btn_customize_connection">Verbindungs-Parameter anpassen (SSID &amp; Heimnetz-IP)</string>
+
+    <!-- File Explorer -->
+    <plurals name="dev_files_summary_folders">
+        <item quantity="one">%1$d Ordner</item>
+        <item quantity="other">%1$d Ordner</item>
+    </plurals>
+    <plurals name="dev_files_summary_files">
+        <item quantity="one">%1$d Datei</item>
+        <item quantity="other">%1$d Dateien</item>
+    </plurals>
+    <string name="dev_files_summary_empty">0 Elemente</string>
+    <string name="dev_files_loading">Lade SD-Karteninhalt…</string>
+    <string name="dev_connection_failed">Verbindung fehlgeschlagen</string>
+    <string name="dev_connection_failed_desc">Der CrossPoint-Reader konnte unter der aktuellen Adresse nicht erreicht werden (%1$s).</string>
+    <string name="dev_btn_adjust_address">Adresse anpassen</string>
+    <string name="dev_btn_retry">Erneut versuchen</string>
+    <string name="dev_parent_folder">Übergeordneter Ordner</string>
+    <string name="dev_folder_empty_title">Dieser Ordner ist leer</string>
+    <string name="dev_no_files_title">Keine Dateien vorhanden</string>
+    <string name="dev_folder_empty_desc">Tippe unten rechts auf „Datei hochladen“, um Dokumente oder E-Books in diesen Ordner zu übertragen.</string>
+    <string name="dev_item_folder">Ordner</string>
+    <string name="dev_action_download">Herunterladen</string>
+    <string name="dev_action_delete">Löschen</string>
+
+    <!-- Quick Address Dialog -->
+    <string name="dev_dialog_wifi_title">CrossPoint &amp; WLAN anpassen</string>
+    <string name="dev_dialog_wifi_desc">WLAN-Name (für CrossPoint AP oder Forks) und WebDAV-Adresse deines Readers:</string>
+    <string name="dev_label_wifi_ssid">WLAN-Name / SSID (oder Präfix)</string>
+    <string name="dev_placeholder_wifi_ssid">z.B. CrossPlay, CrossPoint oder frei wählbar</string>
+    <string name="dev_label_device_address">Geräteadresse (URL oder IP)</string>
+    <string name="dev_placeholder_device_address">http://crossplay.local oder crosspoint.local</string>
+    <string name="dev_btn_save">Speichern</string>
+
+    <!-- Delete Confirmation Dialog -->
+    <string name="dev_delete_dialog_title">Datei löschen?</string>
+    <string name="dev_delete_dialog_msg">Möchtest du „%1$s“ wirklich von der SD-Karte des CrossPoint löschen?</string>
+
+    <!-- Native Settings View -->
+    <string name="dev_status_connected">CrossPoint verbunden</string>
+    <string name="dev_status_battery">Akku: %1$d%%</string>
+    <string name="dev_label_detected_model">Erkanntes Modell:</string>
+    <string name="dev_label_wifi_mode">WLAN-Modus:</string>
+    <string name="dev_label_firmware">Firmware:</string>
+    <string name="dev_label_free_memory">Freier Speicher:</string>
+    <string name="dev_btn_open_web_ui">Web-UI öffnen</string>
+
+    <!-- SD Plugins Card -->
+    <string name="dev_plugins_section_title">SD-Plugins (Apps &amp; Widgets)</string>
+    <string name="dev_plugins_section_desc">Erweiterungen auf der SD-Karte (/plugins/), z. B. Sleepscreen-Wetter, Zitate oder RSS-Widgets.</string>
+    <string name="dev_btn_store">Store</string>
+    <string name="dev_no_plugins_title">Keine Plugins im Ordner /plugins/</string>
+    <string name="dev_no_plugins_desc">SD-Plugins werden in /plugins/ gespeichert (z. B. mit manifest.json und config.json). Du kannst Plugins direkt aus dem Online-Katalog installieren oder Dateien im Explorer hochladen.</string>
+    <string name="dev_btn_plugin_store_github">Plugin Store (GitHub)</string>
+    <string name="dev_btn_create_folder">Ordner erstellen</string>
+    <string name="dev_btn_files">Dateien</string>
+    <string name="dev_btn_configure">Konfigurieren</string>
+
+    <!-- Plugin Store Subpage -->
+    <string name="dev_search_plugins_placeholder">Plugins durchsuchen…</string>
+    <string name="dev_filter_all">Alle (%1$d)</string>
+    <string name="dev_filter_installed">Installiert (%1$d)</string>
+    <string name="dev_filter_available">Verfügbar</string>
+    <string name="dev_loading_catalog">Lade Plugin-Katalog…</string>
+    <string name="dev_catalog_empty_or_failed">Katalog konnte nicht geladen werden oder ist leer.</string>
+    <string name="dev_no_plugins_matching_filter">Keine Plugins für diesen Filter gefunden.</string>
+    <string name="dev_author_by">von %1$s · v%2$s</string>
+    <string name="dev_unknown_author">Unbekannt</string>
+    <string name="dev_badge_update_available">Update verfügbar</string>
+    <string name="dev_badge_installed">Installiert</string>
+    <string name="dev_btn_installing">Installiere…</string>
+    <string name="dev_btn_update">Aktualisieren</string>
+    <string name="dev_btn_reinstall">Erneut installieren</string>
+    <string name="dev_btn_install">Installieren</string>
+
+    <!-- Plugin Config Subpage -->
+    <string name="dev_chip_web_ui">Web-Oberfläche</string>
+    <string name="dev_chip_json_editor">JSON-Editor</string>
+    <string name="dev_config_json_title">Konfigurations-JSON</string>
+    <string name="dev_btn_format">Formatieren</string>
+    <string name="dev_file_label">Datei: %1$s</string>
+    <string name="dev_version_author">Version %1$s · von %2$s</string>
+
+    <!-- App Settings Screen & Device Tabs -->
+    <string name="settings_screen_title">App-Einstellungen</string>
+    <string name="settings_screen_subtitle">Reader-Modell, Originallayout &amp; Verbindung</string>
+    <string name="settings_section_device">Reader-Hardwareprofil</string>
+    <string name="settings_device_dropdown_label">CrossPoint-Gerät</string>
+    <string name="settings_device_dropdown_hint">Wähle dein Gerät für E-Ink-Bilder und Originallayout-Seiten (XTCH).</string>
+    <string name="settings_rerendering_banner">Aktualisiere Originallayout-Artikel für %1$d×%2$d…</string>
+    <plurals name="settings_rerender_done">
+        <item quantity="one">%1$d Originallayout-Artikel aktualisiert</item>
+        <item quantity="other">%1$d Originallayout-Artikel aktualisiert</item>
+    </plurals>
+    <string name="settings_section_original_layout">Originales Website-Layout (XTCH)</string>
+    <string name="settings_xtch_zoom_label">Web-Schriftgröße: %1$d%%</string>
+    <string name="settings_xtch_lighten_dark">Dunkle Websites für E-Ink aufhellen</string>
+    <string name="settings_xtch_lighten_dark_desc">Wandelt dunkle Website-Designs in helles Papier um</string>
+    <string name="settings_section_domains">Gespeicherte Website-Regeln</string>
+    <string name="settings_domains_empty">Noch keine Website-Regeln gespeichert. Schalte in einer Artikelvorschau um, um den Modus für diese Domain zu merken.</string>
+    <string name="settings_domain_reset">Regel entfernen</string>
+    <string name="settings_section_connection">CrossPoint-Verbindung</string>
+    <string name="dev_tab_files">SD-Karte</string>
+    <string name="dev_tab_settings">Reader</string>
+
+    <!-- Vector Fonts (v2.0) & Security -->
+    <string name="dev_fonts_section_title">Vektorschriften</string>
+    <string name="dev_fonts_section_desc">Lade eigene .cpfont-, .ttf-, .otf- oder .ttc-Schriftarten direkt auf deinen CrossPoint-Reader.</string>
+    <string name="dev_btn_upload_font">Schriftart hochladen</string>
+    <string name="dev_btn_uploading_font">Schrift wird hochgeladen…</string>
+    <string name="dev_font_dialog_title">Name der Schriftfamilie</string>
+    <string name="dev_font_family_label">Schriftfamilie</string>
+    <string name="dev_font_upload_success">Schriftart „%1$s“ hochgeladen!</string>
+    <string name="dev_font_upload_failed">Schrift-Upload fehlgeschlagen: %1$s</string>
+    <string name="dev_font_invalid_format">Bitte wähle eine .cpfont-, .ttf-, .otf- oder .ttc-Datei.</string>
+    <string name="dev_plugin_unsafe_url">Unsichere oder nicht-HTTPS Plugin-URL blockiert.</string>
+    <string name="dev_value_not_set">Nicht festgelegt</string>
+    <string name="dev_plugin_source_host">Quelle: %1$s</string>
+    <string name="dev_plugin_third_party_badge">Drittanbieter-Host</string>
+    <string name="dev_plugin_third_party_dialog_title">Drittanbieter-Plugin installieren?</string>
+    <string name="dev_plugin_third_party_dialog_msg">„%1$s“ wird auf einem externen Server (%2$s) gehostet, nicht auf GitHub. Installiere nur Plugins aus vertrauenswürdigen Quellen.</string>
+    <string name="dev_plugin_third_party_confirm">Trotzdem installieren</string>
+    <string name="dev_plugin_checksum_mismatch">Prüfsummenprüfung für %1$s fehlgeschlagen</string>
+    <string name="dev_plugin_cap_label">Berechtigungen: %1$s</string>
+    <string name="dev_plugin_cap_none">Keine Berechtigungen deklariert</string>
+    <string name="dev_plugin_cap_allow_crypto">Crypto-API erlauben</string>
+    <string name="dev_category_general">Allgemein</string>
+    <string name="dev_category_device">Gerät</string>
+    <string name="dev_unit_minutes">\u0020Min.</string>
+    <string name="dev_plugin_start_error">Fehler beim Starten des Plugins:\u0020</string>
+</resources>

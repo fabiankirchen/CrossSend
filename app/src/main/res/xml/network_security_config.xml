@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <!-- Enforce HTTPS for GitHub plugin registry & API -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">github.com</domain>
+        <domain includeSubdomains="true">githubusercontent.com</domain>
+    </domain-config>
+
+    <!-- Explicitly permit cleartext HTTP for known local CrossPoint reader hosts -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">local</domain>
+        <domain includeSubdomains="false">192.168.4.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+
+    <!--
+        Android <domain-config> only accepts hostnames or static IPs and cannot enumerate
+        arbitrary RFC1918 DHCP addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x) assigned
+        to the ESP32 CrossPoint Reader on home Wi-Fi networks.
+        External internet OkHttp clients strictly enforce HTTPS in CrossPointWifiManager.getInternetOkHttpClientBuilder().
+    -->
+    <base-config cleartextTrafficPermitted="true"
+        tools:ignore="InsecureBaseConfiguration" />
+</network-security-config>

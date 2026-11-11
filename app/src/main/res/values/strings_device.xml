@@ -1,0 +1,186 @@
+<resources>
+    <!-- Wi-Fi Manager Strings -->
+    <string name="wifi_error_android_10">WifiNetworkSpecifier requires at least Android 10.</string>
+    <string name="wifi_error_connection">Connection error</string>
+
+    <!-- Toasts and status messages -->
+    <string name="dev_invalid_plugin_name">Invalid plugin name</string>
+    <string name="dev_plugin_installed_success">“%1$s” successfully installed!</string>
+    <string name="dev_plugin_install_failed">Installation of “%1$s” failed</string>
+    <string name="dev_plugin_install_error">Installation error: %1$s</string>
+    <string name="dev_plugin_status_toggled">%1$s %2$s</string>
+    <string name="dev_plugin_enabled">enabled</string>
+    <string name="dev_plugin_disabled">disabled</string>
+    <string name="dev_plugins_folder_ready">Folder /plugins ready on SD card!</string>
+    <string name="dev_plugins_folder_create_failed">Could not create folder /plugins</string>
+    <string name="dev_file_upload_success">“%1$s” successfully uploaded!</string>
+    <string name="dev_file_upload_failed">Upload of “%1$s” failed</string>
+    <string name="dev_file_upload_error">Upload error: %1$s</string>
+    <string name="dev_file_downloading">Downloading “%1$s”…</string>
+    <string name="dev_file_download_saved">“%1$s” saved to Downloads/CrossPoint!</string>
+    <string name="dev_file_download_save_failed">Could not save to Downloads folder</string>
+    <string name="dev_file_download_failed">Download of “%1$s” failed</string>
+    <string name="dev_file_download_error">Download error: %1$s</string>
+    <string name="dev_setting_saved">%1$s saved</string>
+    <string name="dev_setting_save_error">Error saving: %1$s</string>
+    <string name="dev_settings_saved">Settings saved</string>
+    <string name="dev_settings_save_failed">Error saving settings</string>
+    <string name="dev_item_deleted">“%1$s” deleted</string>
+    <string name="dev_delete_failed">Delete failed</string>
+    <string name="dev_invalid_json">Invalid JSON</string>
+
+    <!-- Top Bar &amp; Navigation -->
+    <string name="dev_title_sd_card">SD Card</string>
+    <string name="dev_title_device_settings">Device Settings</string>
+    <string name="dev_title_plugin_store">Plugin Store</string>
+    <string name="dev_title_plugin_config">Plugin Settings · %1$s</string>
+    <string name="dev_title_store_catalog">Official Catalog · itsthisjustin/sd-plugins</string>
+    <string name="dev_title_web_ui">CrossPoint Web UI</string>
+    <string name="dev_action_back">Back</string>
+    <string name="dev_action_refresh">Refresh</string>
+    <string name="dev_action_reload_plugin">Reload plugin</string>
+    <string name="dev_action_refresh_catalog">Refresh catalog</string>
+
+    <!-- Floating Action Button -->
+    <string name="dev_upload_file">Upload file</string>
+    <string name="dev_uploading">Uploading…</string>
+
+    <!-- Connection Card -->
+    <string name="dev_not_connected_title">Not connected to CrossPoint</string>
+    <string name="dev_not_connected_desc">Choose a connection method for your home Wi-Fi or mobile hotspot:</string>
+    <string name="dev_status_searching_lan">Searching CrossPoint on local network (LAN)…</string>
+    <string name="dev_status_connecting_hotspot">Connecting to CrossPoint Hotspot…</string>
+    <string name="dev_btn_cancel">Cancel</string>
+    <string name="dev_btn_auto_connect">Connect automatically (Home Wi-Fi / Hotspot)</string>
+    <string name="dev_btn_direct_hotspot">Open hotspot connection popup (On the go)</string>
+    <string name="dev_btn_customize_connection">Adjust connection parameters (SSID &amp; LAN IP)</string>
+
+    <!-- File Explorer -->
+    <plurals name="dev_files_summary_folders">
+        <item quantity="one">%1$d folder</item>
+        <item quantity="other">%1$d folders</item>
+    </plurals>
+    <plurals name="dev_files_summary_files">
+        <item quantity="one">%1$d file</item>
+        <item quantity="other">%1$d files</item>
+    </plurals>
+    <string name="dev_files_summary_empty">0 items</string>
+    <string name="dev_files_loading">Loading SD card contents…</string>
+    <string name="dev_connection_failed">Connection failed</string>
+    <string name="dev_connection_failed_desc">Could not reach CrossPoint reader at the current address (%1$s).</string>
+    <string name="dev_btn_adjust_address">Adjust address</string>
+    <string name="dev_btn_retry">Retry</string>
+    <string name="dev_parent_folder">Parent folder</string>
+    <string name="dev_folder_empty_title">This folder is empty</string>
+    <string name="dev_no_files_title">No files available</string>
+    <string name="dev_folder_empty_desc">Tap \"Upload file\" in the bottom right corner to transfer documents or e-books to this folder.</string>
+    <string name="dev_item_folder">Folder</string>
+    <string name="dev_action_download">Download</string>
+    <string name="dev_action_delete">Delete</string>
+
+    <!-- Quick Address Dialog -->
+    <string name="dev_dialog_wifi_title">Adjust CrossPoint &amp; Wi-Fi</string>
+    <string name="dev_dialog_wifi_desc">Wi-Fi SSID (for CrossPoint AP or forks) and WebDAV address of your reader:</string>
+    <string name="dev_label_wifi_ssid">Wi-Fi Name / SSID (or prefix)</string>
+    <string name="dev_placeholder_wifi_ssid">e.g. CrossPlay, CrossPoint or custom</string>
+    <string name="dev_label_device_address">Device address (URL or IP)</string>
+    <string name="dev_placeholder_device_address">http://crossplay.local or crosspoint.local</string>
+    <string name="dev_btn_save">Save</string>
+
+    <!-- Delete Confirmation Dialog -->
+    <string name="dev_delete_dialog_title">Delete file?</string>
+    <string name="dev_delete_dialog_msg">Do you really want to delete “%1$s” from the CrossPoint SD card?</string>
+
+    <!-- Native Settings View -->
+    <string name="dev_status_connected">CrossPoint connected</string>
+    <string name="dev_status_battery">Battery: %1$d%%</string>
+    <string name="dev_label_detected_model">Detected model:</string>
+    <string name="dev_label_wifi_mode">Wi-Fi mode:</string>
+    <string name="dev_label_firmware">Firmware:</string>
+    <string name="dev_label_free_memory">Free memory:</string>
+    <string name="dev_btn_open_web_ui">Open Web UI</string>
+
+    <!-- SD Plugins Card -->
+    <string name="dev_plugins_section_title">SD Plugins (Apps &amp; Widgets)</string>
+    <string name="dev_plugins_section_desc">Extensions on the SD card (/plugins/), e.g. screensaver weather, quotes or RSS widgets.</string>
+    <string name="dev_btn_store">Store</string>
+    <string name="dev_no_plugins_title">No plugins in folder /plugins/</string>
+    <string name="dev_no_plugins_desc">SD plugins are stored in /plugins/ (e.g. with manifest.json and config.json). You can install plugins directly from the online catalog or upload files in Explorer.</string>
+    <string name="dev_btn_plugin_store_github">Plugin Store (GitHub)</string>
+    <string name="dev_btn_create_folder">Create folder</string>
+    <string name="dev_btn_files">Files</string>
+    <string name="dev_btn_configure">Configure</string>
+
+    <!-- Plugin Store Subpage -->
+    <string name="dev_search_plugins_placeholder">Search plugins…</string>
+    <string name="dev_filter_all">All (%1$d)</string>
+    <string name="dev_filter_installed">Installed (%1$d)</string>
+    <string name="dev_filter_available">Available</string>
+    <string name="dev_loading_catalog">Loading plugin catalog…</string>
+    <string name="dev_catalog_empty_or_failed">Could not load catalog or catalog is empty.</string>
+    <string name="dev_no_plugins_matching_filter">No plugins found for this filter.</string>
+    <string name="dev_author_by">by %1$s · v%2$s</string>
+    <string name="dev_unknown_author">Unknown</string>
+    <string name="dev_badge_update_available">Update available</string>
+    <string name="dev_badge_installed">Installed</string>
+    <string name="dev_btn_installing">Installing…</string>
+    <string name="dev_btn_update">Update</string>
+    <string name="dev_btn_reinstall">Reinstall</string>
+    <string name="dev_btn_install">Install</string>
+
+    <!-- Plugin Config Subpage -->
+    <string name="dev_chip_web_ui">Web Interface</string>
+    <string name="dev_chip_json_editor">JSON Editor</string>
+    <string name="dev_config_json_title">Configuration JSON</string>
+    <string name="dev_btn_format">Format</string>
+    <string name="dev_file_label">File: %1$s</string>
+    <string name="dev_version_author">Version %1$s · by %2$s</string>
+
+    <!-- App Settings Screen & Device Tabs -->
+    <string name="settings_screen_title">App Settings</string>
+    <string name="settings_screen_subtitle">Reader model, original layout &amp; connection</string>
+    <string name="settings_section_device">Reader Hardware Profile</string>
+    <string name="settings_device_dropdown_label">CrossPoint device</string>
+    <string name="settings_device_dropdown_hint">Select the reader whose resolution is used for E-Ink images and Original Layout (XTCH) pages.</string>
+    <string name="settings_rerendering_banner">Updating Original Layout articles for %1$d×%2$d…</string>
+    <plurals name="settings_rerender_done">
+        <item quantity="one">Updated %1$d Original Layout article</item>
+        <item quantity="other">Updated %1$d Original Layout articles</item>
+    </plurals>
+    <string name="settings_section_original_layout">Original Website Layout (XTCH)</string>
+    <string name="settings_xtch_zoom_label">Web text zoom: %1$d%%</string>
+    <string name="settings_xtch_lighten_dark">Lighten dark websites for E-Ink</string>
+    <string name="settings_xtch_lighten_dark_desc">Converts dark-mode web backgrounds into bright paper pages</string>
+    <string name="settings_section_domains">Saved Website Rules</string>
+    <string name="settings_domains_empty">No website-specific rules yet. Toggle the display mode inside any article preview to remember it for its domain.</string>
+    <string name="settings_domain_reset">Remove rule</string>
+    <string name="settings_section_connection">CrossPoint Connection</string>
+    <string name="dev_tab_files">SD Card</string>
+    <string name="dev_tab_settings">Reader</string>
+
+    <!-- Vector Fonts (v2.0) & Security -->
+    <string name="dev_fonts_section_title">Vector Fonts</string>
+    <string name="dev_fonts_section_desc">Upload custom .cpfont, .ttf, .otf, or .ttc font files directly to your CrossPoint reader.</string>
+    <string name="dev_btn_upload_font">Upload font</string>
+    <string name="dev_btn_uploading_font">Uploading font…</string>
+    <string name="dev_font_dialog_title">Font Family Name</string>
+    <string name="dev_font_family_label">Family name</string>
+    <string name="dev_font_upload_success">Font “%1$s” uploaded!</string>
+    <string name="dev_font_upload_failed">Font upload failed: %1$s</string>
+    <string name="dev_font_invalid_format">Please select a .cpfont, .ttf, .otf, or .ttc file.</string>
+    <string name="dev_plugin_unsafe_url">Blocked unsafe or non-HTTPS plugin URL.</string>
+    <string name="dev_value_not_set">Not set</string>
+    <string name="dev_plugin_source_host">Source: %1$s</string>
+    <string name="dev_plugin_third_party_badge">Third-party host</string>
+    <string name="dev_plugin_third_party_dialog_title">Install third-party plugin?</string>
+    <string name="dev_plugin_third_party_dialog_msg">“%1$s” is hosted on an external server (%2$s), not GitHub. Only install plugins from sources you trust.</string>
+    <string name="dev_plugin_third_party_confirm">Install anyway</string>
+    <string name="dev_plugin_checksum_mismatch">Checksum verification failed for %1$s</string>
+    <string name="dev_plugin_cap_label">Capabilities: %1$s</string>
+    <string name="dev_plugin_cap_none">No declared capabilities</string>
+    <string name="dev_plugin_cap_allow_crypto">Allow Crypto API</string>
+    <string name="dev_category_general">General</string>
+    <string name="dev_category_device">Device</string>
+    <string name="dev_unit_minutes">\u0020min</string>
+    <string name="dev_plugin_start_error">Error starting plugin:\u0020</string>
+</resources>

@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">CrossSend</string>
+    <string name="share_target_title">Send to CrossPoint</string>
+    <string name="status_disconnected">Not connected</string>
+</resources>

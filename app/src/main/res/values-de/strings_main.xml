@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Main Screen & Navigation -->
+    <string name="main_toast_preparing_sleepscreen">Sperrbildschirm wird vorbereitet…</string>
+    <string name="main_snackbar_sleepscreen_transferred">Sperrbildschirm erfolgreich übertragen</string>
+    <string name="main_snackbar_sleepscreen_error">Fehler beim Übertragen: %1$s</string>
+    <string name="main_action_close_selection">Auswahl beenden</string>
+    <string name="main_selection_count">%1$d ausgewählt</string>
+    <string name="main_selection_none">Keine</string>
+    <string name="main_selection_all">Alle</string>
+    <string name="main_action_delete_selected">Ausgewählte löschen</string>
+    <string name="main_search_hint">Suchen</string>
+    <string name="main_search_placeholder">Artikel &amp; Bücher suchen…</string>
+    <string name="main_clear_search">Suche löschen</string>
+    <string name="main_view_list">Listenansicht</string>
+    <string name="main_view_grid">Cover-Raster</string>
+    <string name="main_empty_search_title">Keine Treffer für „%1$s“</string>
+    <string name="main_empty_archive_title">Noch keine Einträge im 90-Tage-Archiv</string>
+    <string name="main_empty_category_title">Keine %1$s vorhanden</string>
+    <string name="main_empty_search_desc">Versuche einen anderen Suchbegriff.</string>
+    <string name="main_empty_articles_desc">Nutze das Teilen-Menü in Thunderbird, Browsern oder tippe auf das Plus, um Artikel &amp; Mails hinzuzufügen.</string>
+    <string name="main_empty_books_desc">Wähle über das Plus eine EPUB- oder PDF-Datei aus, um sie auf deinen CrossPoint Reader zu laden.</string>
+    <string name="main_empty_archive_desc">Gelesene und erledigte Artikel der letzten 90 Tage werden hier speicherschonend aufbewahrt.</string>
+    <string name="main_toast_resending_article">Artikel wird erneut für den Reader geladen…</string>
+    <plurals name="main_dialog_batch_delete_title_archive">
+        <item quantity="one">%1$d Eintrag endgültig löschen?</item>
+        <item quantity="other">%1$d Einträge endgültig löschen?</item>
+    </plurals>
+    <plurals name="main_dialog_batch_delete_title_files">
+        <item quantity="one">%1$d Datei löschen?</item>
+        <item quantity="other">%1$d Dateien löschen?</item>
+    </plurals>
+    <plurals name="main_dialog_batch_delete_msg_archive">
+        <item quantity="one">Möchtest du den %1$d ausgewählten Eintrag endgültig aus dem Archiv löschen?</item>
+        <item quantity="other">Möchtest du die %1$d ausgewählten Einträge endgültig aus dem Archiv löschen?</item>
+    </plurals>
+    <plurals name="main_dialog_batch_delete_msg_files">
+        <item quantity="one">Möchtest du die %1$d ausgewählte Datei löschen?\n\nDateien auf dem CrossPoint Reader werden beim nächsten Sync entfernt und für 90 Tage im Archiv aufbewahrt.</item>
+        <item quantity="other">Möchtest du die %1$d ausgewählten Dateien löschen?\n\nDateien auf dem CrossPoint Reader werden beim nächsten Sync entfernt und für 90 Tage im Archiv aufbewahrt.</item>
+    </plurals>
+    <string name="main_dialog_delete_title_archive">Aus Archiv löschen?</string>
+    <string name="main_dialog_delete_title_file">Datei löschen?</string>
+    <string name="main_dialog_delete_msg_archive">Möchtest du „%1$s“ endgültig aus dem Archiv löschen?</string>
+    <string name="main_dialog_delete_msg_file">Möchtest du „%1$s“ entfernen?\n\nDie Datei wird beim nächsten Sync vom CrossPoint Reader entfernt und für 90 Tage im Archiv aufbewahrt.</string>
+    <string name="main_action_delete">Löschen</string>
+    <string name="main_action_cancel">Abbrechen</string>
+    <string name="main_dialog_add_url_title">Web-Artikel hinzufügen</string>
+    <string name="main_dialog_add_url_desc">Gib die URL des Artikels ein. Er wird für E-Ink als EPUB oder Originallayout (XTCH) aufbereitet:</string>
+    <string name="main_button_in_browser">Im Browser</string>
+    <string name="main_button_add">Hinzufügen</string>
+    <string name="main_dialog_add_note_title">Notiz / Text einfügen</string>
+    <string name="main_label_note_title_optional">Titel (optional)</string>
+    <string name="main_label_note_content">Text / Mail / Notiz…</string>
+    <string name="main_button_save">Speichern</string>
+
+    <!-- Toolbar -->
+    <string name="toolbar_add_content">Hinzufügen</string>
+    <string name="toolbar_rss_feeds">RSS-Feeds</string>
+    <string name="toolbar_device_settings">Gerät &amp; Verbindungseinstellungen</string>
+    <string name="toolbar_sync_pending">Synchronisieren (%1$d neu)</string>
+    <string name="toolbar_synced_tap">Synchronisiert – Tippen zum Abgleichen</string>
+    <string name="toolbar_connect_crosspoint">Mit CrossPoint verbinden</string>
+    <string name="toolbar_sheet_title">Inhalte hinzufügen</string>
+    <string name="toolbar_action_import_file">Datei importieren (EPUB / PDF / ACSM)</string>
+    <string name="toolbar_action_import_file_desc">E-Books oder Dokumente vom Speicher hinzufügen</string>
+    <string name="toolbar_action_add_url">Web-Link eingeben</string>
+    <string name="toolbar_action_add_url_desc">Webseite als E-Ink-EPUB oder Originallayout (XTCH) herunterladen</string>
+    <string name="toolbar_action_add_note">Schnellnotiz verfassen</string>
+    <string name="toolbar_action_add_note_desc">Eigenen Text oder Gedanken direkt als Artikel sichern</string>
+    <string name="toolbar_action_send_sleepscreen">Sleepscreen-Bild senden</string>
+    <string name="toolbar_action_send_sleepscreen_desc">Bild als 1-Bit E-Ink Sperrbildschirm (X4, X3, Boox Picco u.a.) übertragen</string>
+
+    <!-- Document Cards -->
+    <string name="card_status_synced">Auf CrossPoint</string>
+    <string name="card_status_pending">Wartet auf Sync</string>
+    <string name="card_status_uploading">Lädt hoch… %1$d%%</string>
+    <string name="card_status_failed">Fehler</string>
+    <string name="card_status_deleting">Wird gelöscht…</string>
+    <string name="card_status_archived">Archiviert</string>
+    <string name="card_action_delete">Löschen</string>
+    <string name="card_cover_status_synced">Auf Reader</string>
+    <string name="card_cover_status_pending">Wartet</string>
+    <string name="card_cover_status_deleting">Löscht…</string>
+
+    <!-- Preview Dialog -->
+    <string name="preview_no_text_archive">Kein Vorschautext im Archiv gespeichert.</string>
+    <string name="preview_title_archive">Archiv-Vorschau</string>
+    <string name="preview_title_format">%1$s-Vorschau</string>
+    <string name="preview_action_resend">Erneut an Reader senden</string>
+    <string name="preview_share_article">Artikel teilen</string>
+    <string name="preview_share_document">Dokument teilen</string>
+    <string name="preview_action_share">Teilen</string>
+    <string name="preview_by_author">Von: %1$s</string>
+    <string name="preview_status_synced">Auf CrossPoint Reader</string>
+    <string name="preview_status_pending">Wartet auf Sync</string>
+    <string name="preview_status_failed">Sync fehlgeschlagen</string>
+    <string name="preview_status_deleting">Wird gelöscht…</string>
+    <string name="preview_status_in_archive">Im 90-Tage-Archiv</string>
+    <string name="preview_label_excerpt">Text-Auszug:</string>
+    <string name="preview_loading_content">Lade Inhalt…</string>
+    <string name="preview_no_text_available">Kein Vorschautext verfügbar.</string>
+    <string name="preview_source_format">Quelle: %1$s</string>
+
+    <!-- WebView Dialog -->
+    <string name="webview_default_title">Web-Artikel</string>
+    <string name="webview_close">Schließen</string>
+    <string name="webview_import_button">Artikel importieren</string>
+    <string name="webview_rerender_xtch_button">Fertig &amp; neu rendern</string>
+    <string name="webview_login_hint">Melde dich einmalig an. Deine Anmeldung bleibt für künftige Artikel gespeichert.</string>
+    <string name="webview_xtch_session_hint">Bestätige Cookies oder melde dich an – die Sitzung bleibt gespeichert. Tippe dann auf „Fertig &amp; neu rendern“.</string>
+    <string name="webview_third_party_cookies">Drittanbieter-Cookies</string>
+    <string name="webview_processing_toast">Artikel wird verarbeitet…</string>
+
+    <!-- Quick Connection Settings Dialog -->
+    <string name="conn_dialog_title">CrossPoint &amp; WLAN Verbindung</string>
+    <string name="conn_dialog_desc">Passe den WLAN-Namen (für CrossPoint AP oder Forks) und die WebDAV-Adresse deines Readers an:</string>
+    <string name="conn_ssid_label">WLAN-Name / SSID (oder Präfix)</string>
+    <string name="conn_ssid_placeholder">z.B. CrossPlay, CrossPoint oder frei wählbar</string>
+    <string name="conn_chip_cross_universal">Cross (Universal)</string>
+    <string name="conn_chip_crossplay">CrossPlay</string>
+    <string name="conn_chip_crosspoint">CrossPoint</string>
+    <string name="conn_url_label">WebDAV URL / IP</string>
+    <string name="conn_url_placeholder">http://crossplay.local oder crosspoint.local</string>
+    <string name="conn_scanning_lan">Suche im LAN…</string>
+    <string name="conn_scan_lan">Heimnetz scannen</string>
+    <string name="conn_chip_ap_ip">192.168.4.1 (AP)</string>
+    <string name="conn_button_connect">Verbinden</string>
+    <string name="conn_button_cancel">Abbrechen</string>
+
+    <!-- Originallayout (XTCH) & Navigation -->
+    <string name="proc_progress_rendering_layout">Rendere Originallayout (XTCH)…</string>
+    <string name="proc_error_xtch_failed">Originallayout-Konvertierung fehlgeschlagen.</string>
+    <plurals name="proc_preview_xtch_summary">
+        <item quantity="one">Originallayout (XTCH) · %1$d Seite · %2$d×%3$d px</item>
+        <item quantity="other">Originallayout (XTCH) · %1$d Seiten · %2$d×%3$d px</item>
+    </plurals>
+    <string name="proc_preview_xtch_fallback">Originallayout-Dokument (XTCH)</string>
+    <string name="main_nav_device">CrossPoint-Gerät</string>
+    <string name="main_nav_archive">Archiv</string>
+    <string name="main_filter_all">Alle</string>
+    <string name="main_filter_articles">Artikel</string>
+    <string name="main_filter_books">Bücher</string>
+    <string name="main_filter_unsynced">Ungesendet</string>
+    <string name="main_filter_unsynced_count">Ungesendet (%1$d)</string>
+    <string name="main_empty_library_title">Deine Bibliothek ist leer</string>
+    <string name="main_empty_library_desc">Nutze das Teilen-Menü in Thunderbird, Browsern oder tippe auf das Plus, um Artikel, Bücher oder Notizen hinzuzufügen.</string>
+    <string name="main_empty_unsynced_title">Alle Dokumente sind synchronisiert</string>
+    <string name="main_empty_unsynced_desc">Derzeit warten keine Dokumente auf die Übertragung.</string>
+    <string name="archive_title">Archiv</string>
+    <plurals name="archive_subtitle_count">
+        <item quantity="one">%1$d Eintrag (90-Tage-Archiv)</item>
+        <item quantity="other">%1$d Einträge (90-Tage-Archiv)</item>
+    </plurals>
+    <string name="archive_cd_back">Zurück zur Bibliothek</string>
+    <string name="archive_cd_search">Archiv durchsuchen</string>
+    <string name="archive_search_placeholder">Im Archiv suchen…</string>
+    <string name="preview_render_mode_label">Darstellungsmodus</string>
+    <string name="preview_mode_reader">Leseansicht (EPUB)</string>
+    <string name="preview_mode_original">Originallayout (XTCH)</string>
+    <string name="preview_mode_switching">Aktualisiere Format &amp; Domain-Regel…</string>
+    <string name="preview_mode_target_resolution">Ziel: %1$d×%2$d · %3$s (gespeichert für %4$s)</string>
+    <string name="preview_mode_switch_failed">Artikel konnte im gewählten Modus nicht neu geladen werden.</string>
+    <string name="preview_xtch_pages_title">E-Ink-Seitenvorschau (%1$d/%2$d)</string>
+    <string name="preview_xtch_prev_page">Vorherige Seite</string>
+    <string name="preview_xtch_next_page">Nächste Seite</string>
+    <string name="preview_xtch_fullscreen">Vollbild-Vorschau</string>
+    <string name="preview_open_in_app_browser">Im App-Browser öffnen (Cookies &amp; Login)</string>
+    <string name="preview_rerender_xtch">Layout neu rendern</string>
+
+    <!-- Berechtigung Lokales Netzwerk & Datenschutzhinweis -->
+    <string name="wifi_error_local_network_permission">Die Berechtigung für das lokale Netzwerk wird benötigt, um CrossPoint zu finden und zu verbinden.</string>
+    <string name="settings_section_privacy">Info &amp; Datenschutzhinweis</string>
+    <string name="settings_privacy_summary">CrossSend arbeitet vollständig lokal ohne Benutzerkonten, Analyse-Dienste oder Drittanbieter-Server.</string>
+    <string name="settings_privacy_button">Datenschutzhinweis anzeigen</string>
+    <string name="settings_privacy_dialog_title">Datenschutzhinweis</string>
+    <string name="settings_privacy_dialog_body">• Rein lokale Speicherung: Deine Bibliothek, Feeds und Domain-Regeln werden ausschließlich in einer lokalen Room-Datenbank auf deinem Gerät gespeichert.\n\n• Kein Tracking &amp; keine Werbung: CrossSend enthält keinerlei Telemetrie, Analyse-Dienste, Crash-Tracker oder Werbe-SDKs.\n\n• Keine Cloud-Backups sensibler Daten: Private Datenbanken, Einstellungen und WebView-Login-Cookies sind von Android-Cloud- und Geräte-Backups ausgeschlossen.\n\n• Direkte Geräteübertragung: Dokumente und Sperrbildschirme werden direkt über dein lokales WLAN oder den Reader-Hotspot ohne Zwischenserver an dein CrossPoint-Gerät gesendet.\n\n• Direkte Web- &amp; RSS-Abrufe: Web-Artikel und RSS-Feeds werden direkt per HTTPS von den von dir gewählten Quellen geladen.</string>
+    <string name="settings_privacy_dialog_close">Schließen</string>
+
+    <!-- Sync Manager -->
+    <string name="sync_error_already_running">Synchronisation läuft bereits.</string>
+    <string name="sync_status_checking_connection">Prüfe Verbindung zu CrossPoint…</string>
+    <string name="sync_status_unreachable">CrossPoint nicht erreichbar</string>
+    <string name="sync_error_webdav_unreachable">CrossPoint WebDAV-Server ist nicht erreichbar.</string>
+    <string name="sync_status_creating_dirs">Erstelle Verzeichnisse auf Reader…</string>
+    <string name="sync_status_deleting_files">Lösche entfernte Dateien auf Reader…</string>
+    <string name="sync_status_uploading_files">Übertrage neue Dateien…</string>
+    <string name="sync_status_sending_file">Sende %1$s…</string>
+    <string name="sync_error_upload_failed">Upload fehlgeschlagen</string>
+    <string name="sync_status_checking_read">Prüfe gelesene Artikel…</string>
+    <string name="sync_status_syncing_manifest">Synchronisiere Bibliotheks-Manifest…</string>
+    <string name="sync_status_completed">Synchronisation abgeschlossen</string>
+    <string name="sync_error_unknown">Unbekannter Fehler bei der Synchronisation.</string>
+</resources>

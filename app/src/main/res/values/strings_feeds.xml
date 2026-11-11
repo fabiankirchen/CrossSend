@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Feeds Screen & Tab -->
+    <string name="feeds_title">RSS Feeds</string>
+    <string name="feeds_subtitle_all">All sources · Chronological</string>
+    <string name="feeds_subtitle_filter">Filter: %1$s</string>
+    <string name="feeds_cd_reset_filter">Reset filter</string>
+    <string name="feeds_cd_back_to_library">Back to library</string>
+    <string name="feeds_cd_list_view">List view</string>
+    <string name="feeds_cd_grid_view">Cover grid</string>
+    <string name="feeds_cd_sources_and_filter">Sources &amp; filter</string>
+    <string name="feeds_dialog_delete_title">Remove feed?</string>
+    <string name="feeds_dialog_delete_message">Do you want to remove \'%1$s\' and all saved feed articles from your subscriptions?</string>
+    <string name="feeds_action_remove">Remove</string>
+    <string name="feeds_action_cancel">Cancel</string>
+    <string name="feeds_toast_refresh_error">Error refreshing: %1$s</string>
+    <string name="feeds_sheet_sources_title">RSS Sources &amp; Filters</string>
+    <string name="feeds_sheet_sources_subtitle">Tap to filter or manage your subscriptions</string>
+    <string name="feeds_sheet_btn_new">New</string>
+    <string name="feeds_sheet_all_sources">All sources (chronological)</string>
+    <plurals name="feeds_sheet_total_articles">
+        <item quantity="one">%1$d article total</item>
+        <item quantity="other">%1$d articles total</item>
+    </plurals>
+    <string name="feeds_cd_selected">Selected</string>
+    <plurals name="feeds_sheet_feed_item_subtitle">
+        <item quantity="one">%1$d article • %2$s</item>
+        <item quantity="other">%1$d articles • %2$s</item>
+    </plurals>
+    <string name="feeds_cd_delete_feed">Delete feed</string>
+    <string name="feeds_empty_title">No feeds added yet</string>
+    <string name="feeds_empty_message">Subscribe to RSS or Atom feeds (e.g. blogs, articles or news) to save new articles directly for your CrossPoint Reader.</string>
+    <string name="feeds_btn_add_first">Add first feed</string>
+    <string name="feeds_loading_articles_feed">Loading articles from \'%1$s\'…</string>
+    <string name="feeds_loading_articles_all">Loading articles from feeds…</string>
+    <string name="feeds_no_articles_in_feed">No articles found in this feed.</string>
+    <string name="feeds_no_articles_cached">No articles cached yet.</string>
+    <string name="feeds_btn_refresh_now">Refresh now</string>
+    <string name="feeds_badge_saved">Saved</string>
+    <string name="feeds_badge_epub">EPUB</string>
+    <string name="feeds_btn_loading_older">Loading older articles…</string>
+    <string name="feeds_btn_load_older" tools:ignore="PluralsCandidate">Load older articles (%1$d loaded)</string>
+    <string name="feeds_all_articles_loaded">All available articles loaded (%1$d)</string>
+    <string name="feeds_btn_saving">Saving…</string>
+    <string name="feeds_btn_in_library">In library</string>
+    <string name="feeds_btn_save">Save</string>
+    <string name="feeds_by_author">By %1$s</string>
+    <plurals name="feeds_toast_older_loaded">
+        <item quantity="one">Loaded %1$d older article</item>
+        <item quantity="other">Loaded %1$d older articles</item>
+    </plurals>
+    <string name="feeds_toast_no_more_older">No more older articles available</string>
+    <string name="feeds_toast_load_older_error">Could not load older articles: %1$s</string>
+    <string name="feeds_toast_save_error">Error saving: %1$s</string>
+    <string name="feeds_dialog_add_title">Subscribe to feed</string>
+    <string name="feeds_dialog_add_instruction">Enter the URL of an RSS or Atom feed:</string>
+    <string name="feeds_dialog_add_url_label">Feed URL (e.g. https://blog.com/feed)</string>
+    <string name="feeds_dialog_add_name_label">Custom name (optional)</string>
+    <string name="feeds_toast_enter_url">Please enter a feed URL</string>
+    <string name="feeds_toast_subscribed_success">Successfully subscribed to feed \'%1$s\'!</string>
+    <string name="feeds_toast_fetch_error">Could not fetch feed: %1$s</string>
+    <string name="feeds_dialog_btn_subscribe">Subscribe</string>
+    <string name="feeds_dialog_btn_cancel">Cancel</string>
+    <string name="feeds_default_feed_title">RSS Feed</string>
+    <string name="feeds_reading_time_min">%1$d min</string>
+    <string name="feeds_reading_time_min_bullet">• %1$d min</string>
+    <string name="feeds_unnamed_article">Untitled Article</string>
+    <string name="feeds_error_unsafe_url">Invalid or internal feed URL blocked.</string>
+    <string name="feeds_error_http">Could not fetch feed: HTTP %1$d</string>
+    <string name="feeds_error_empty">Feed response is empty.</string>
+
+    <!-- Document Processor & Notifications -->
+    <string name="proc_error_internal_access_denied">Access to internal app files denied.</string>
+    <string name="proc_error_no_shareable_content">No shareable content found.</string>
+    <string name="proc_error_prefix">Error: %1$s</string>
+    <string name="proc_progress_reading_article">Reading web article…</string>
+    <string name="proc_progress_optimizing_images">Optimizing images for E-Ink…</string>
+    <string name="proc_progress_creating_epub">Creating E-Ink EPUB…</string>
+    <string name="proc_progress_transferring">Transferring to CrossPoint…</string>
+    <string name="proc_success_transferred">Transferred to CrossPoint</string>
+    <string name="proc_success_saved_for_sync">Saved for next sync</string>
+    <string name="proc_error_epub_failed">EPUB creation failed</string>
+    <string name="proc_success_saved_articles">Saved in /crosssend/articles/</string>
+    <string name="proc_progress_converting_pdf">Converting PDF for E-Ink…</string>
+    <string name="proc_success_pdf_transferred">PDF transferred as E-Ink EPUB</string>
+    <string name="proc_success_pdf_saved">PDF saved as E-Ink EPUB</string>
+    <string name="proc_error_eink_failed">Failed to create E-Ink file</string>
+    <string name="proc_error_pdf">PDF error: %1$s</string>
+    <string name="proc_progress_reading_acsm">Reading ACSM book…</string>
+    <string name="proc_progress_downloading_book">Downloading book file…</string>
+    <string name="proc_success_acsm_transferred">Transferred to CrossPoint (%1$s)</string>
+    <string name="proc_success_acsm_provided">Ready (%1$s)</string>
+    <string name="proc_error_acsm">ACSM error: %1$s</string>
+    <string name="proc_error_unsupported_format">Format not supported: %1$s</string>
+    <string name="proc_progress_copying_file">Copying file…</string>
+    <string name="proc_success_saved_in">Saved in %1$s</string>
+    <string name="proc_error_copying_file">Error copying file: %1$s</string>
+    <string name="proc_progress_optimizing_sleepscreen">Optimizing sleepscreen for E-Ink…</string>
+    <string name="proc_success_sleepscreen_transferred">Sleepscreen transferred to CrossPoint</string>
+    <string name="proc_success_sleepscreen_saved">Sleepscreen provided (in /sleep/)</string>
+    <string name="proc_error_sleepscreen">Sleepscreen error: %1$s</string>
+    <string name="proc_progress_optimizing_rss">Optimizing RSS article…</string>
+    <string name="proc_notification_alert_title">CrossSend Notice / Error</string>
+    <string name="proc_default_web_article_title">Web Article</string>
+    <string name="proc_login_required_title">Login required: %1$s</string>
+    <string name="proc_login_required_text">Tap here to log in via browser and load the article.</string>
+    <string name="proc_login_required_big_text">This article requires a user account. Tap here to log in using the CrossSend browser. Your login will be remembered for future articles.</string>
+    <string name="proc_channel_progress_name">CrossSend Document Processing</string>
+    <string name="proc_channel_progress_desc">Status and progress of documents and synchronization</string>
+    <string name="proc_channel_alerts_name">CrossSend Notices &amp; Errors</string>
+    <string name="proc_channel_alerts_desc">Notices, errors and login requests</string>
+    <string name="proc_progress_processing_email">Processing email / newsletter…</string>
+    <string name="proc_progress_creating_article">Creating article…</string>
+    <string name="proc_default_pdf_filename">Document.pdf</string>
+    <string name="proc_default_file_prefix">File</string>
+    <string name="proc_acsm_root_dir">root directory (/)</string>
+    <string name="proc_error_acsm_read">Could not read ACSM file.</string>
+    <string name="proc_error_acsm_too_large">ACSM file exceeds the 2 MB limit.</string>
+    <string name="proc_error_html_too_large">HTML file exceeds the 15 MB limit.</string>
+    <string name="proc_error_file_read">Could not read file.</string>
+    <string name="proc_error_file_too_large">File exceeds the 150 MB limit.</string>
+    <string name="proc_error_image_read">Could not read image data.</string>
+    <string name="proc_error_image_too_large">Image file exceeds the 25 MB limit.</string>
+    <string name="proc_error_bmp_convert">Image could not be converted to BMP.</string>
+    <string name="proc_error_pdf_open">Could not open PDF file.</string>
+    <string name="proc_error_pdf_no_text_ocr">This PDF contains no readable text layer (scanned document without OCR).</string>
+    <string name="proc_error_pdf_no_text">This PDF contains no readable text layer.</string>
+
+    <!-- Document Preview Reader -->
+    <string name="proc_preview_file_not_found">File not found on device (it may have been deleted or moved).</string>
+    <string name="proc_preview_sleepscreen">Sleepscreen image for the e-reader (saved in /sleep/).</string>
+    <string name="proc_preview_error">Preview could not be loaded: %1$s</string>
+    <string name="proc_preview_epub_no_text">No text paragraphs found in this EPUB file.</string>
+    <string name="proc_preview_file_empty">The file is empty.</string>
+    <plurals name="proc_preview_pdf_pages">
+        <item quantity="one">PDF document (%1$d page)</item>
+        <item quantity="other">PDF document (%1$d pages)</item>
+    </plurals>
+    <string name="proc_preview_pdf_unavailable">PDF preview not available: %1$s</string>
+    <string name="proc_preview_acsm_header">📖 Adobe Content Server Message (ACSM)\n\n</string>
+    <string name="proc_preview_acsm_title">Title: %1$s\n</string>
+    <string name="proc_preview_acsm_author">Author: %1$s\n</string>
+    <string name="proc_preview_acsm_format">Target format: %1$s\n</string>
+    <string name="proc_preview_acsm_footer">\nThis license file is provided in the root directory (/) for your e-reader.</string>
+    <string name="proc_preview_acsm_fallback">ACSM license file for e-book.</string>
+
+    <!-- Share Handler Activity -->
+    <string name="share_receiving_content">Receiving content…</string>
+    <string name="share_blocked_unsafe_uri">Access to internal app files denied.</string>
+</resources>
