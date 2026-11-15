@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png" alt="CrossSend Icon" width="120">
+  <img src="icon/readme_icon.png" alt="CrossSend Icon" width="120">
 </p>
 
 <h1 align="center">CrossSend</h1>
@@ -8,7 +8,7 @@
   <a href="https://github.com/fabiankirchen/CrossSend/releases/latest">
     <img src="https://img.shields.io/github/v/release/fabiankirchen/CrossSend?label=Release&style=for-the-badge&color=2e7d32" alt="Release">
   </a>
-  <a href="obtainium://add/https://github.com/fabiankirchen/CrossSend">
+  <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/fabiankirchen/CrossSend">
     <img src="https://img.shields.io/badge/Obtainium-Add_App-007ACC?style=for-the-badge&logo=android&logoColor=white" alt="Obtainium">
   </a>
   <a href="LICENSE">
@@ -28,19 +28,17 @@ Converts web articles, JS/paywalled pages (via in-app WebView), RSS/Atom feeds, 
 
 ## Installation
 
-### Via Obtainium (Recommended)
-With [Obtainium](https://github.com/ImranR98/Obtainium), you receive updates automatically directly from GitHub:
-
 <p align="center">
-  <a href="obtainium://add/https://github.com/fabiankirchen/CrossSend">
-    <img src="https://img.shields.io/badge/Open_in_Obtainium-007ACC?style=for-the-badge&logo=android&logoColor=white" alt="Open in Obtainium" height="40">
+  <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/fabiankirchen/CrossSend">
+    <img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="54">
+  </a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/fabiankirchen/CrossSend/releases/latest">
+    <img src="https://raw.githubusercontent.com/Kunzisoft/Github-badge/main/get-it-on-github.png" alt="Get it on GitHub" height="54">
   </a>
 </p>
 
-*Tap the button above or add `https://github.com/fabiankirchen/CrossSend` manually in Obtainium.*
-
-### Manual Installation (APK)
-Download the latest APK from **[Releases](https://github.com/fabiankirchen/CrossSend/releases/latest)** and install it on your Android device.
+*Tap **Get it on Obtainium** (recommended for automatic updates) or add `https://github.com/fabiankirchen/CrossSend` manually in [Obtainium](https://github.com/ImranR98/Obtainium). Alternatively, download the latest APK directly from **[Releases](https://github.com/fabiankirchen/CrossSend/releases/latest)**.*
 
 ---
 
