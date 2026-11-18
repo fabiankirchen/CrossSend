@@ -478,19 +478,19 @@ class EInkImageOptimizer(
         }
         try {
             val request = Request.Builder().url(imageUrl).build()
-            val response = client.newCall(request).execute()
+            val imageBytes = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(tag, "Failed to download image: $imageUrl, HTTP ${response.code}")
+                    return@withContext null
+                }
 
-            if (!response.isSuccessful) {
-                Log.w(tag, "Failed to download image: $imageUrl, HTTP ${response.code}")
-                return@withContext null
-            }
-
-            val responseBody = response.body ?: return@withContext null
-            val imageBytes = try {
-                readBoundedBytes(responseBody, 15L * 1024 * 1024)
-            } catch (e: Exception) {
-                Log.w(tag, "Image exceeds byte limit ($imageUrl): ${e.message}")
-                return@withContext null
+                val responseBody = response.body ?: return@withContext null
+                try {
+                    readBoundedBytes(responseBody, 15L * 1024 * 1024)
+                } catch (e: Exception) {
+                    Log.w(tag, "Image exceeds byte limit ($imageUrl): ${e.message}")
+                    return@withContext null
+                }
             }
 
             // 1. Decode bounds

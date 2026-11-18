@@ -342,11 +342,13 @@ fun DocumentPreviewDialog(
                         Spacer(modifier = Modifier.height(6.dp))
 
                         // Metadata chips / info
+                        val displayDate = com.crosssend.app.util.DateUtils.parseFilenameTimestamp(liveDocument.fileName)
+                            ?: Date(liveDocument.createdAt)
                         val dateFormatted = java.text.DateFormat.getDateTimeInstance(
                             java.text.DateFormat.MEDIUM,
                             java.text.DateFormat.SHORT,
                             LocalLocale.current.platformLocale
-                        ).format(Date(liveDocument.createdAt))
+                        ).format(displayDate)
                         val sizeText = if (liveDocument.syncStatus == SyncStatus.ARCHIVED) stringResource(R.string.card_status_archived) else formatFileSize(liveDocument.fileSizeBytes)
                         Text(
                             text = "$dateFormatted • $sizeText",
@@ -464,12 +466,19 @@ fun DocumentPreviewDialog(
                             onClick = {
                                 if (liveDocument.renderMode != RenderMode.READER) {
                                     isSwitchingMode = true
-                                    scope.launch {
-                                        val ok = app.documentProcessor.switchDocumentRenderMode(liveDocument.id, RenderMode.READER)
-                                        if (!ok) {
-                                            Toast.makeText(context, resources.getString(R.string.preview_mode_switch_failed), Toast.LENGTH_SHORT).show()
+                                    app.applicationScope.launch {
+                                        try {
+                                            val ok = app.documentProcessor.switchDocumentRenderMode(liveDocument.id, RenderMode.READER)
+                                            if (!ok) {
+                                                withContext(Dispatchers.Main) {
+                                                    Toast.makeText(context, resources.getString(R.string.preview_mode_switch_failed), Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        } finally {
+                                            withContext(Dispatchers.Main) {
+                                                isSwitchingMode = false
+                                            }
                                         }
-                                        isSwitchingMode = false
                                     }
                                 }
                             },
@@ -488,12 +497,19 @@ fun DocumentPreviewDialog(
                             onClick = {
                                 if (liveDocument.renderMode != RenderMode.ORIGINAL_LAYOUT) {
                                     isSwitchingMode = true
-                                    scope.launch {
-                                        val ok = app.documentProcessor.switchDocumentRenderMode(liveDocument.id, RenderMode.ORIGINAL_LAYOUT)
-                                        if (!ok) {
-                                            Toast.makeText(context, resources.getString(R.string.preview_mode_switch_failed), Toast.LENGTH_SHORT).show()
+                                    app.applicationScope.launch {
+                                        try {
+                                            val ok = app.documentProcessor.switchDocumentRenderMode(liveDocument.id, RenderMode.ORIGINAL_LAYOUT)
+                                            if (!ok) {
+                                                withContext(Dispatchers.Main) {
+                                                    Toast.makeText(context, resources.getString(R.string.preview_mode_switch_failed), Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        } finally {
+                                            withContext(Dispatchers.Main) {
+                                                isSwitchingMode = false
+                                            }
                                         }
-                                        isSwitchingMode = false
                                     }
                                 }
                             },
@@ -572,17 +588,24 @@ fun DocumentPreviewDialog(
                                 enabled = !isBusyRendering,
                                 onClick = {
                                     isSwitchingMode = true
-                                    scope.launch {
-                                        val ok = app.documentProcessor.processWebUrlOriginalLayout(
-                                            url = liveDocument.sourceUrl!!,
-                                            fallbackTitle = liveDocument.title,
-                                            author = liveDocument.author,
-                                            existingDoc = liveDocument
-                                        )
-                                        if (!ok) {
-                                            Toast.makeText(context, resources.getString(R.string.preview_mode_switch_failed), Toast.LENGTH_SHORT).show()
+                                    app.applicationScope.launch {
+                                        try {
+                                            val ok = app.documentProcessor.processWebUrlOriginalLayout(
+                                                url = liveDocument.sourceUrl!!,
+                                                fallbackTitle = liveDocument.title,
+                                                author = liveDocument.author,
+                                                existingDoc = liveDocument
+                                            )
+                                            if (!ok) {
+                                                withContext(Dispatchers.Main) {
+                                                    Toast.makeText(context, resources.getString(R.string.preview_mode_switch_failed), Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        } finally {
+                                            withContext(Dispatchers.Main) {
+                                                isSwitchingMode = false
+                                            }
                                         }
-                                        isSwitchingMode = false
                                     }
                                 }
                             ) {

@@ -99,19 +99,18 @@ object RemoteImageLoader {
                 .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; CrossSend)")
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext null
-            }
-
-            val responseBody = response.body ?: return@withContext null
-            val imageBytes = try {
-                responseBody.use { body ->
-                    EInkImageOptimizer.readBoundedBytes(body, 15L * 1024 * 1024)
+            val imageBytes = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext null
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Thumbnail exceeds limit or failed reading: $imageUrl - ${e.message}")
-                return@withContext null
+
+                val responseBody = response.body ?: return@withContext null
+                try {
+                    EInkImageOptimizer.readBoundedBytes(responseBody, 15L * 1024 * 1024)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Thumbnail exceeds limit or failed reading: $imageUrl - ${e.message}")
+                    return@withContext null
+                }
             }
 
             if (imageBytes.isEmpty()) return@withContext null

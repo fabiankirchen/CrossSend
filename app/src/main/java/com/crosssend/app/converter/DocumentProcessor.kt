@@ -22,6 +22,7 @@ import com.crosssend.app.data.model.RenderMode
 import com.crosssend.app.data.model.SyncStatus
 import com.crosssend.app.network.RssItem
 import com.crosssend.app.util.DateUtils
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -110,6 +111,17 @@ class DocumentProcessor(private val context: Context) {
             }
             return false
         }
+
+        fun normalizeExternalHttpsUrl(rawUrl: String): String {
+            val trimmed = rawUrl.trim()
+            if (trimmed.isEmpty()) return trimmed
+            return when {
+                trimmed.startsWith("https://", ignoreCase = true) -> trimmed
+                trimmed.startsWith("http://", ignoreCase = true) -> "https://" + trimmed.substring(7)
+                !trimmed.contains("://") -> "https://$trimmed"
+                else -> trimmed
+            }
+        }
     }
 
     fun isSafeSharedUri(uri: Uri): Boolean = Companion.isSafeSharedUri(context, uri)
@@ -178,6 +190,10 @@ class DocumentProcessor(private val context: Context) {
                 showErrorNotification(notificationId, context.getString(R.string.proc_error_no_shareable_content))
             }
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
             Log.e(tag, "handleShare failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
         }
@@ -196,6 +212,7 @@ class DocumentProcessor(private val context: Context) {
         fileName: String,
         excerpt: String?,
         renderMode: RenderMode,
+        publishedTimestamp: Long = System.currentTimeMillis(),
         existingById: DocumentEntity? = null
     ) {
         val app = CrossSendApp.instance
@@ -215,6 +232,11 @@ class DocumentProcessor(private val context: Context) {
             } else {
                 existing.pendingDeleteRemotePath
             }
+            val effectiveCreatedAt = if (existing.syncStatus == SyncStatus.ARCHIVED || existing.archivedAt != null) {
+                maxOf(publishedTimestamp, (existing.archivedAt ?: 0L) + 1000L, System.currentTimeMillis())
+            } else {
+                publishedTimestamp
+            }
             app.database.documentDao().update(
                 existing.copy(
                     title = title,
@@ -223,7 +245,8 @@ class DocumentProcessor(private val context: Context) {
                     fileName = fileName,
                     remotePath = remotePath,
                     fileSizeBytes = targetFile.length(),
-                    createdAt = System.currentTimeMillis(),
+                    createdAt = effectiveCreatedAt,
+                    archivedAt = null,
                     syncStatus = SyncStatus.PENDING_UPLOAD,
                     syncError = null,
                     excerpt = excerpt ?: existing.excerpt,
@@ -241,7 +264,7 @@ class DocumentProcessor(private val context: Context) {
                 fileName = fileName,
                 remotePath = remotePath,
                 fileSizeBytes = targetFile.length(),
-                createdAt = System.currentTimeMillis(),
+                createdAt = publishedTimestamp,
                 syncStatus = SyncStatus.PENDING_UPLOAD,
                 excerpt = excerpt,
                 renderMode = renderMode
@@ -259,14 +282,12 @@ class DocumentProcessor(private val context: Context) {
         notificationId: Int = nextNotificationId(),
         triggerSync: Boolean = true
     ): Boolean = withContext(Dispatchers.IO) {
-        require(EInkImageOptimizer.isSafeExternalImageUrl(url)) { "Invalid or internal URL blocked: $url" }
         val app = CrossSendApp.instance
         val progressTitle = fallbackTitle ?: existingDoc?.title ?: "CrossSend"
         showProgressNotification(notificationId, progressTitle, context.getString(R.string.proc_progress_rendering_layout), indeterminate = true)
 
         try {
-            val effectiveDate = publishedDate ?: extractTimestampFromUrl(url) ?: Date()
-            val timestamp = DateUtils.formatForFilename(effectiveDate)
+            require(EInkImageOptimizer.isSafeExternalImageUrl(url)) { "Invalid or internal URL blocked: $url" }
             val slugTitle = app.articleExtractor.extractTitleFromUrlSlug(url)
             val initialTitle = fallbackTitle?.takeIf { it.isNotBlank() }
                 ?: existingDoc?.title?.takeIf { it.isNotBlank() }
@@ -293,6 +314,12 @@ class DocumentProcessor(private val context: Context) {
                 showErrorNotification(notificationId, context.getString(R.string.proc_error_xtch_failed))
                 return@withContext false
             }
+
+            val effectiveDate = publishedDate
+                ?: renderRes.publishedDate
+                ?: extractTimestampFromUrl(url)
+                ?: Date()
+            val timestamp = DateUtils.formatForFilename(effectiveDate)
 
             val effectiveTitle = app.articleExtractor.sanitizeDocumentTitle(
                 fallbackTitle?.takeIf { it.isNotBlank() }
@@ -339,6 +366,7 @@ class DocumentProcessor(private val context: Context) {
                 fileName = finalFileName,
                 excerpt = renderRes.excerpt,
                 renderMode = RenderMode.ORIGINAL_LAYOUT,
+                publishedTimestamp = effectiveDate.time,
                 existingById = existingDoc
             )
 
@@ -353,6 +381,10 @@ class DocumentProcessor(private val context: Context) {
             }
             true
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
             Log.e(tag, "processWebUrlOriginalLayout failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
             false
@@ -402,6 +434,10 @@ class DocumentProcessor(private val context: Context) {
                 app.webArticleLoginRequest.value = com.crosssend.app.WebArticleLoginRequest(url, doc.title)
                 false
             } catch (e: Exception) {
+                if (e is CancellationException) {
+                    dismissNotification(notifId)
+                    throw e
+                }
                 Log.e(tag, "switchDocumentRenderMode to READER failed", e)
                 showErrorNotification(notifId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
                 false
@@ -441,21 +477,21 @@ class DocumentProcessor(private val context: Context) {
         notificationId: Int = nextNotificationId(),
         triggerSync: Boolean = true
     ): Boolean = withContext(Dispatchers.IO) {
-        require(EInkImageOptimizer.isSafeExternalImageUrl(url)) { "Invalid or internal URL blocked: $url" }
         val app = CrossSendApp.instance
-        if (resolveRenderModeForUrl(url) == RenderMode.ORIGINAL_LAYOUT) {
-            return@withContext processWebUrlOriginalLayout(
-                url = url,
-                fallbackTitle = fallbackTitle,
-                author = null,
-                publishedDate = extractTimestampFromUrl(url),
-                notificationId = notificationId,
-                triggerSync = triggerSync
-            )
-        }
-        showProgressNotification(notificationId, "CrossSend", context.getString(R.string.proc_progress_reading_article), indeterminate = true)
-
         try {
+            require(EInkImageOptimizer.isSafeExternalImageUrl(url)) { "Invalid or internal URL blocked: $url" }
+            if (resolveRenderModeForUrl(url) == RenderMode.ORIGINAL_LAYOUT) {
+                return@withContext processWebUrlOriginalLayout(
+                    url = url,
+                    fallbackTitle = fallbackTitle,
+                    author = null,
+                    publishedDate = null,
+                    notificationId = notificationId,
+                    triggerSync = triggerSync
+                )
+            }
+            showProgressNotification(notificationId, "CrossSend", context.getString(R.string.proc_progress_reading_article), indeterminate = true)
+
             val (article, rawHtml) = app.articleExtractor.extractFromUrlWithRaw(url)
             val cleanedArticleTitle = app.articleExtractor.cleanTitle(article.title)
             val cleanedFallbackTitle = fallbackTitle?.let { app.articleExtractor.cleanTitle(it) }
@@ -481,6 +517,10 @@ class DocumentProcessor(private val context: Context) {
             app.webArticleLoginRequest.value = com.crosssend.app.WebArticleLoginRequest(url, paywallEx.articleTitle ?: fallbackTitle)
             false
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
             Log.e(tag, "processWebUrl failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
             false
@@ -556,6 +596,10 @@ class DocumentProcessor(private val context: Context) {
                 inputSubject = subject
             )
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
             Log.e(tag, "processHtmlContent failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
         }
@@ -628,7 +672,8 @@ class DocumentProcessor(private val context: Context) {
                     targetFile = targetEpubFile,
                     fileName = fileName,
                     excerpt = excerpt,
-                    renderMode = RenderMode.READER
+                    renderMode = RenderMode.READER,
+                    publishedTimestamp = effectiveDate.time
                 )
 
                 // Record debug dump if raw input is available
@@ -659,6 +704,10 @@ class DocumentProcessor(private val context: Context) {
                 false
             }
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
             Log.e(tag, "processExtractedArticle failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
             false
@@ -884,7 +933,7 @@ class DocumentProcessor(private val context: Context) {
                 fileName = fileName,
                 remotePath = "/crosssend/articles/$fileName",
                 fileSizeBytes = targetFile.length(),
-                createdAt = System.currentTimeMillis(),
+                createdAt = effectiveDate.time,
                 syncStatus = SyncStatus.PENDING_UPLOAD,
                 excerpt = excerpt
             )
@@ -996,6 +1045,10 @@ class DocumentProcessor(private val context: Context) {
                 showErrorNotification(notificationId, context.getString(R.string.proc_error_eink_failed))
             }
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
             Log.e(tag, "PDF processing failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_pdf, e.localizedMessage ?: ""))
         }
@@ -1133,6 +1186,10 @@ class DocumentProcessor(private val context: Context) {
                 showSuccessNotification(notificationId, doc.title, context.getString(R.string.proc_success_acsm_provided, targetInfo))
             }
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
             Log.e(tag, "processAcsmUri failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_acsm, e.localizedMessage ?: ""))
         }
@@ -1248,6 +1305,10 @@ class DocumentProcessor(private val context: Context) {
                 showSuccessNotification(notificationId, fileName, context.getString(R.string.proc_success_saved_in, remotePath))
             }
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
             Log.e(tag, "processFileUri failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_copying_file, e.localizedMessage ?: ""))
         }
@@ -1307,6 +1368,10 @@ class DocumentProcessor(private val context: Context) {
             }
             doc
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
             Log.e(tag, "processSleepScreenUri failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_sleepscreen, e.localizedMessage ?: ""))
             null
@@ -1384,7 +1449,8 @@ class DocumentProcessor(private val context: Context) {
                     targetFile = targetEpubFile,
                     fileName = fileName,
                     excerpt = excerpt,
-                    renderMode = RenderMode.READER
+                    renderMode = RenderMode.READER,
+                    publishedTimestamp = effectiveDate.time
                 )
 
                 // Record debug dump for RSS item
@@ -1421,6 +1487,10 @@ class DocumentProcessor(private val context: Context) {
                 showErrorNotification(notificationId, context.getString(R.string.proc_error_epub_failed))
             }
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
             Log.e(tag, "processRssItem failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
         }

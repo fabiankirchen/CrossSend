@@ -246,7 +246,7 @@ class CrossSendApp : Application() {
                         fileName = fileName,
                         remotePath = remotePath,
                         fileSizeBytes = file.length(),
-                        createdAt = file.lastModified(),
+                        createdAt = com.crosssend.app.util.DateUtils.parseFilenameTimestamp(fileName)?.time ?: file.lastModified(),
                         syncStatus = SyncStatus.SYNCED,
                         renderMode = inferredMode
                     )

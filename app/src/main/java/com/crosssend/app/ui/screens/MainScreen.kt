@@ -148,7 +148,11 @@ fun MainScreen(
                 doc.fileName.contains(q, ignoreCase = true) ||
                 (doc.sourceUrl?.contains(q, ignoreCase = true) == true)
             matchesType && matchesUnsynced && matchesQuery
-        }
+        }.sortedWith(
+            compareByDescending<DocumentEntity> {
+                com.crosssend.app.util.DateUtils.parseFilenameTimestamp(it.fileName)?.time ?: it.createdAt
+            }.thenByDescending { it.fileName }
+        )
     }
 
     // Dialog states
@@ -687,7 +691,16 @@ fun MainScreen(
             onResendFromArchive = { archivedDoc ->
                 archivedDoc.sourceUrl?.let { url ->
                     app.applicationScope.launch {
-                        app.documentProcessor.processWebUrl(url, archivedDoc.title)
+                        if (archivedDoc.renderMode == com.crosssend.app.data.model.RenderMode.ORIGINAL_LAYOUT) {
+                            app.documentProcessor.processWebUrlOriginalLayout(
+                                url = url,
+                                fallbackTitle = archivedDoc.title,
+                                author = archivedDoc.author,
+                                existingDoc = archivedDoc
+                            )
+                        } else {
+                            app.documentProcessor.processWebUrl(url, archivedDoc.title)
+                        }
                     }
                     Toast.makeText(context, resources.getString(R.string.main_toast_resending_article), Toast.LENGTH_SHORT).show()
                 }
@@ -853,7 +866,7 @@ fun MainScreen(
                     if (inputUrl.isNotBlank()) {
                         TextButton(
                             onClick = {
-                                val url = inputUrl.trim()
+                                val url = com.crosssend.app.converter.DocumentProcessor.normalizeExternalHttpsUrl(inputUrl)
                                 inputUrl = ""
                                 showAddUrlDialog = false
                                 app.pendingWebViewRequest.value = WebArticleLoginRequest(url)
@@ -865,7 +878,7 @@ fun MainScreen(
                     TextButton(
                         enabled = inputUrl.isNotBlank(),
                         onClick = {
-                            val url = inputUrl.trim()
+                            val url = com.crosssend.app.converter.DocumentProcessor.normalizeExternalHttpsUrl(inputUrl)
                             inputUrl = ""
                             showAddUrlDialog = false
                             app.applicationScope.launch {

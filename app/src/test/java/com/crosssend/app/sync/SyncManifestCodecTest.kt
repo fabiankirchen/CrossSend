@@ -154,4 +154,50 @@ class SyncManifestCodecTest {
         assertEquals(2000L, entry.updatedAt)
         assertEquals(RenderMode.ORIGINAL_LAYOUT, entry.renderMode)
     }
+
+    @Test
+    fun `reactivated archived article overrides older remote tombstone during merge`() {
+        val remoteArchived = SyncManifestEntry(
+            key = "https://example.com/re-send",
+            type = DocumentType.ARTICLE,
+            sourceUrl = "https://example.com/re-send",
+            title = "Archived Article",
+            author = null,
+            renderMode = RenderMode.READER,
+            fileName = "20261101_1200_Archived_Article.epub",
+            remotePath = "/crosssend/articles/20261101_1200_Archived_Article.epub",
+            excerpt = null,
+            status = SyncManifestStatus.ARCHIVED,
+            createdAt = 1000L,
+            updatedAt = 2000L
+        )
+        val reactivatedEntity = DocumentEntity(
+            id = 5,
+            title = "Archived Article",
+            sourceUrl = "https://example.com/re-send",
+            type = DocumentType.ARTICLE,
+            localPath = "/tmp/20261101_1200_Archived_Article.epub",
+            fileName = "20261101_1200_Archived_Article.epub",
+            remotePath = "/crosssend/articles/20261101_1200_Archived_Article.epub",
+            fileSizeBytes = 1024L,
+            createdAt = 3000L,
+            archivedAt = null,
+            syncStatus = SyncStatus.PENDING_UPLOAD,
+            renderMode = RenderMode.READER
+        )
+
+        val localEntry = SyncManifestCodec.fromDocumentEntity(reactivatedEntity)
+        assertNotNull(localEntry)
+        assertEquals(SyncManifestStatus.ACTIVE, localEntry!!.status)
+        assertEquals(3000L, localEntry.updatedAt)
+
+        val merged = SyncManifestCodec.mergeEntries(
+            local = listOf(localEntry),
+            remote = listOf(remoteArchived),
+            nowMs = 4000L
+        )
+        assertEquals(1, merged.size)
+        assertEquals(SyncManifestStatus.ACTIVE, merged.first().status)
+        assertEquals(3000L, merged.first().updatedAt)
+    }
 }

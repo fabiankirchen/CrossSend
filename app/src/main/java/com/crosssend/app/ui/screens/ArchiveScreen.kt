@@ -478,7 +478,16 @@ fun ArchiveScreen(
             onResendFromArchive = { archivedDoc ->
                 archivedDoc.sourceUrl?.let { url ->
                     app.applicationScope.launch {
-                        app.documentProcessor.processWebUrl(url, archivedDoc.title)
+                        if (archivedDoc.renderMode == com.crosssend.app.data.model.RenderMode.ORIGINAL_LAYOUT) {
+                            app.documentProcessor.processWebUrlOriginalLayout(
+                                url = url,
+                                fallbackTitle = archivedDoc.title,
+                                author = archivedDoc.author,
+                                existingDoc = archivedDoc
+                            )
+                        } else {
+                            app.documentProcessor.processWebUrl(url, archivedDoc.title)
+                        }
                     }
                     Toast.makeText(
                         context,

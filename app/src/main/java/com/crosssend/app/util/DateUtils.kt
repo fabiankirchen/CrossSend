@@ -70,8 +70,19 @@ object DateUtils {
         return null
     }
 
+    private val filenameTimestampRegex = Regex("^(\\d{8}_\\d{4})_.*")
+
     fun formatForFilename(date: Date): String {
         return SimpleDateFormat("yyyyMMdd_HHmm", Locale.ROOT).format(date)
+    }
+
+    fun parseFilenameTimestamp(fileName: String): Date? {
+        val match = filenameTimestampRegex.matchEntire(fileName) ?: return null
+        return try {
+            SimpleDateFormat("yyyyMMdd_HHmm", Locale.ROOT).apply { isLenient = false }.parse(match.groupValues[1])
+        } catch (_: Exception) {
+            null
+        }
     }
 
     fun formatForByline(date: Date): String {

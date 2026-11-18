@@ -79,7 +79,9 @@ import com.crosssend.app.converter.EInkImageOptimizer
 import com.crosssend.app.converter.WebPageXtchRenderer
 import com.crosssend.app.data.model.RenderMode
 import com.crosssend.app.network.WifiConnectionState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -244,19 +246,25 @@ fun AppSettingsScreen(
                                         deviceMenuExpanded = false
 
                                         if (prevDimensions != newDimensions) {
-                                            scope.launch {
-                                                isRerenderingDocs = true
+                                            app.applicationScope.launch {
+                                                withContext(Dispatchers.Main) {
+                                                    isRerenderingDocs = true
+                                                }
                                                 try {
                                                     val updated = app.documentProcessor.rerenderOriginalLayoutDocumentsForDeviceChange()
                                                     if (updated > 0) {
-                                                        Toast.makeText(
-                                                            context,
-                                                            resources.getQuantityString(R.plurals.settings_rerender_done, updated, updated),
-                                                            Toast.LENGTH_SHORT
-                                                        ).show()
+                                                        withContext(Dispatchers.Main) {
+                                                            Toast.makeText(
+                                                                context,
+                                                                resources.getQuantityString(R.plurals.settings_rerender_done, updated, updated),
+                                                                Toast.LENGTH_SHORT
+                                                            ).show()
+                                                        }
                                                     }
                                                 } finally {
-                                                    isRerenderingDocs = false
+                                                    withContext(Dispatchers.Main) {
+                                                        isRerenderingDocs = false
+                                                    }
                                                 }
                                             }
                                         }

@@ -104,21 +104,22 @@ class ArticleExtractor {
             .header("Sec-Fetch-User", "?1")
             .header("Upgrade-Insecure-Requests", "1")
 
-        val response = client.newCall(reqBuilder.build()).execute()
-        if (response.code in listOf(401, 403)) {
-            val blockedMsg = if (java.util.Locale.getDefault().language == "de") {
-                "Zugriff verweigert (HTTP ${response.code})"
-            } else {
-                "Access denied (HTTP ${response.code})"
+        val (rawHtml, effectiveUrl) = client.newCall(reqBuilder.build()).execute().use { response ->
+            if (response.code in listOf(401, 403)) {
+                val blockedMsg = if (java.util.Locale.getDefault().language == "de") {
+                    "Zugriff verweigert (HTTP ${response.code})"
+                } else {
+                    "Access denied (HTTP ${response.code})"
+                }
+                throw PaywallOrLoginRequiredException(url, blockedMsg)
             }
-            throw PaywallOrLoginRequiredException(url, blockedMsg)
-        }
-        if (!response.isSuccessful) {
-            throw java.io.IOException("HTTP ${response.code} from $url")
-        }
+            if (!response.isSuccessful) {
+                throw java.io.IOException("HTTP ${response.code} from $url")
+            }
 
-        val rawHtml = response.body?.let { EInkImageOptimizer.readBoundedString(it, 10L * 1024 * 1024) } ?: ""
-        val effectiveUrl = response.request.url.toString()
+            val html = response.body?.let { EInkImageOptimizer.readBoundedString(it, 10L * 1024 * 1024) } ?: ""
+            html to response.request.url.toString()
+        }
         val doc = Jsoup.parse(rawHtml, effectiveUrl)
 
         var article = extractFromDocument(doc, effectiveUrl)
@@ -161,11 +162,12 @@ class ArticleExtractor {
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .header("Accept-Language", "en-US,en;q=0.9,de;q=0.8")
 
-            val resp = client.newCall(reqBuilder.build()).execute()
-            if (!resp.isSuccessful) return@withContext currentArticle
+            val (iframeHtml, iframeEffectiveUrl) = client.newCall(reqBuilder.build()).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext currentArticle
 
-            val iframeHtml = resp.body?.let { EInkImageOptimizer.readBoundedString(it, 10L * 1024 * 1024) } ?: ""
-            val iframeEffectiveUrl = resp.request.url.toString()
+                val html = resp.body?.let { EInkImageOptimizer.readBoundedString(it, 10L * 1024 * 1024) } ?: ""
+                html to resp.request.url.toString()
+            }
             val iframeDoc = Jsoup.parse(iframeHtml, iframeEffectiveUrl)
             val iframeArticle = extractFromDocument(iframeDoc, iframeEffectiveUrl)
 

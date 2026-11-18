@@ -316,7 +316,7 @@ class WebDavClient(
             val request = Request.Builder().url(apiUrl).get().build()
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
-                    val body = response.body?.string()
+                    val body = response.body?.let { EInkImageOptimizer.readBoundedString(it, 5L * 1024 * 1024) }
                     if (!body.isNullOrBlank() && body.trim().startsWith("[")) {
                         val arr = JSONArray(body)
                         val items = mutableListOf<RemoteDavItem>()
@@ -375,7 +375,8 @@ class WebDavClient(
                     return@withContext Result.failure(Exception("HTTP ${response.code} von $baseUrl"))
                 }
 
-                val xmlBody = response.body?.string() ?: return@withContext Result.success(emptyList())
+                val xmlBody = response.body?.let { EInkImageOptimizer.readBoundedString(it, 5L * 1024 * 1024) }
+                    ?: return@withContext Result.success(emptyList())
                 Result.success(parsePropfindXml(xmlBody, cleanPath))
             }
         } catch (e: Exception) {

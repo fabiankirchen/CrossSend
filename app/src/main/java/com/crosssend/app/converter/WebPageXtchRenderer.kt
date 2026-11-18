@@ -28,6 +28,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import com.crosssend.app.CrossSendApp
+import com.crosssend.app.util.DateUtils
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -39,6 +40,7 @@ import org.json.JSONTokener
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Date
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
@@ -49,7 +51,8 @@ data class XtchRenderResult(
     val title: String?,
     val excerpt: String?,
     val colorCoverFile: File?,
-    val leadImageUrl: String? = null
+    val leadImageUrl: String? = null,
+    val publishedDate: Date? = null
 )
 
 internal data class LayoutBox(
@@ -129,6 +132,7 @@ object WebPageXtchRenderer {
         var pageTitle: String? = null
         var excerpt: String? = null
         var leadImageUrl: String? = null
+        var publishedDate: Date? = null
 
         val rendered = withContext(Dispatchers.Main) {
             val activeActivity = CrossSendApp.instance.currentActivityRef?.get()?.takeIf {
@@ -320,6 +324,9 @@ object WebPageXtchRenderer {
                         excerpt = json.optString("excerpt").takeIf { it.isNotBlank() }
                         leadImageUrl = json.optString("leadImage")
                             .takeIf { it.isNotBlank() && EInkImageOptimizer.isSafeExternalImageUrl(it) }
+                        publishedDate = json.optString("publishedDate")
+                            .takeIf { it.isNotBlank() }
+                            ?.let { DateUtils.parseDate(it) }
                         measuredCssH = json.optInt("pageCssH", cssH).coerceAtLeast(100)
                         actualCssW = json.optInt("pageCssW", cssW).coerceAtLeast(100)
                         val totalCssH = json.optInt("totalHeight", measuredCssH).coerceAtLeast(measuredCssH)
@@ -570,7 +577,8 @@ object WebPageXtchRenderer {
             title = effectiveTitle,
             excerpt = excerpt,
             colorCoverFile = null,
-            leadImageUrl = leadImageUrl
+            leadImageUrl = leadImageUrl,
+            publishedDate = publishedDate
         )
     }
 
@@ -953,6 +961,49 @@ object WebPageXtchRenderer {
                         }
                     } catch (eImg) {}
 
+                    var rawPubDate = '';
+                    try {
+                        var dateSelectors = [
+                            'meta[property="article:published_time"]',
+                            'meta[name="article:published_time"]',
+                            'meta[property="og:published_time"]',
+                            'meta[name="publication_date"]',
+                            'meta[name="date"]',
+                            'meta[name="pubdate"]',
+                            'meta[name="sailthru.date"]',
+                            'meta[name="parsely-pub-date"]',
+                            'meta[name="DC.date.issued"]'
+                        ];
+                        for (var ds = 0; ds < dateSelectors.length && !rawPubDate; ds++) {
+                            var dm = document.querySelector(dateSelectors[ds]);
+                            if (dm && dm.content && dm.content.trim()) {
+                                rawPubDate = dm.content.trim();
+                            }
+                        }
+                        if (!rawPubDate) {
+                            var tEl = document.querySelector('time[datetime]');
+                            if (tEl && tEl.getAttribute('datetime')) {
+                                rawPubDate = tEl.getAttribute('datetime').trim();
+                            }
+                        }
+                        if (!rawPubDate) {
+                            var tPlain = document.querySelector('time');
+                            if (tPlain && tPlain.textContent && tPlain.textContent.trim()) {
+                                rawPubDate = tPlain.textContent.trim();
+                            }
+                        }
+                        if (!rawPubDate) {
+                            var ldScripts = document.querySelectorAll('script[type="application/ld+json"]');
+                            for (var li = 0; li < ldScripts.length && !rawPubDate; li++) {
+                                var ldText = ldScripts[li].textContent || '';
+                                var mPub = ldText.match(/"datePublished"\s*:\s*"([^"]+)"/) || ldText.match(/"dateCreated"\s*:\s*"([^"]+)"/);
+                                if (mPub && mPub[1]) {
+                                    rawPubDate = mPub[1].trim();
+                                }
+                            }
+                        }
+                    } catch (eDate) {}
+
                     var existingSpacer = document.getElementById('__xtch_bottom_spacer');
                     if (existingSpacer && existingSpacer.parentNode) existingSpacer.parentNode.removeChild(existingSpacer);
 
@@ -1274,6 +1325,7 @@ object WebPageXtchRenderer {
                         title: document.title || '',
                         excerpt: rawText.slice(0, 300),
                         leadImage: leadImg || '',
+                        publishedDate: rawPubDate || '',
                         pageCssW: pageW,
                         pageCssH: pageH,
                         firstContentTop: firstContentTop < 999999 ? firstContentTop : 0,
@@ -1282,7 +1334,7 @@ object WebPageXtchRenderer {
                         bgLayers: bgLayers
                     });
                 } catch (err) {
-                    return JSON.stringify({ title: '', excerpt: '', leadImage: '', boxes: [], bgLayers: [] });
+                    return JSON.stringify({ title: '', excerpt: '', leadImage: '', publishedDate: '', boxes: [], bgLayers: [] });
                 }
             })();
         """.trimIndent()

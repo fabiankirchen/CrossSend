@@ -67,24 +67,25 @@ class RssFeedParser {
             .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 8) CrossSend/1.0")
             .build()
 
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful) {
-            val msg = try {
-                com.crosssend.app.CrossSendApp.instance.getString(com.crosssend.app.R.string.feeds_error_http, response.code)
-            } catch (_: Throwable) {
-                "Could not fetch feed: HTTP ${response.code}"
+        val xml = client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                val msg = try {
+                    com.crosssend.app.CrossSendApp.instance.getString(com.crosssend.app.R.string.feeds_error_http, response.code)
+                } catch (_: Throwable) {
+                    "Could not fetch feed: HTTP ${response.code}"
+                }
+                throw IllegalStateException(msg)
             }
-            throw IllegalStateException(msg)
-        }
 
-        val responseBody = response.body ?: throw IllegalStateException(
-            try {
-                com.crosssend.app.CrossSendApp.instance.getString(com.crosssend.app.R.string.feeds_error_empty)
-            } catch (_: Throwable) {
-                "Feed response is empty."
-            }
-        )
-        val xml = com.crosssend.app.converter.EInkImageOptimizer.readBoundedString(responseBody, 10L * 1024 * 1024)
+            val responseBody = response.body ?: throw IllegalStateException(
+                try {
+                    com.crosssend.app.CrossSendApp.instance.getString(com.crosssend.app.R.string.feeds_error_empty)
+                } catch (_: Throwable) {
+                    "Feed response is empty."
+                }
+            )
+            com.crosssend.app.converter.EInkImageOptimizer.readBoundedString(responseBody, 10L * 1024 * 1024)
+        }
         parseFeedXml(xml, feedUrl)
     }
 

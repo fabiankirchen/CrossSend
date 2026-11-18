@@ -267,6 +267,7 @@ class SyncManager(
                             if (localDoc != null &&
                                 localDoc.syncStatus != SyncStatus.ARCHIVED &&
                                 localDoc.syncStatus != SyncStatus.PENDING_DELETE &&
+                                localDoc.syncStatus != SyncStatus.PENDING_UPLOAD &&
                                 entry.updatedAt >= localDoc.createdAt
                             ) {
                                 val localFile = File(localDoc.localPath)
