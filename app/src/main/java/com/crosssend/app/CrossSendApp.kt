@@ -116,7 +116,7 @@ class CrossSendApp : Application() {
         database = AppDatabase.getDatabase(this)
         wifiManager = CrossPointWifiManager(this)
         webDavClient = WebDavClient(this, wifiManager = wifiManager)
-        syncManager = SyncManager(this, database.documentDao(), webDavClient) { entry ->
+        syncManager = SyncManager(this, database.documentDao(), webDavClient, wifiManager) { entry ->
             val url = entry.sourceUrl ?: return@SyncManager false
             when (entry.renderMode) {
                 com.crosssend.app.data.model.RenderMode.ORIGINAL_LAYOUT -> {

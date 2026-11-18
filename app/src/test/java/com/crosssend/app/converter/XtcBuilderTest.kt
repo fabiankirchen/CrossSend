@@ -317,4 +317,69 @@ class XtcBuilderTest {
         assertEquals(1, shortTop.size)
         assertTrue(shortTop[0].isRoot)
     }
+
+    @Test
+    fun `applyEInkContrast snaps dark text to pure black, subtle tints to white, and preserves native gray steps`() {
+        assertEquals(0f, XtcBuilder.applyEInkContrast(0f), 0.01f)
+        assertEquals(0f, XtcBuilder.applyEInkContrast(68f), 0.01f)
+        assertEquals(85f, XtcBuilder.applyEInkContrast(85f), 0.01f)
+        assertEquals(170f, XtcBuilder.applyEInkContrast(170f), 0.01f)
+        assertEquals(255f, XtcBuilder.applyEInkContrast(240f), 0.01f)
+        assertEquals(255f, XtcBuilder.applyEInkContrast(255f), 0.01f)
+
+        val midtone = XtcBuilder.applyEInkContrast(110f)
+        assertTrue("Expected continuous midtone contrast between 85 and 128, got $midtone", midtone in 90f..120f)
+    }
+
+    @Test
+    fun `ditherAtkinson4Level keeps glyph edges antialiased without bleeding dither dots into paper or gray boxes`() {
+        val w = 9
+        val h = 7
+        // White paper (255f) with a vertical black stroke at x=2 (0f) and antialiased edge at x=3 (100f / 175f)
+        val paperLuma = FloatArray(w * h) { 255f }
+        for (y in 1 until h - 1) {
+            paperLuma[y * w + 2] = 0f
+            paperLuma[y * w + 3] = if (y % 2 == 0) 100f else 175f
+        }
+        val paperLevels = XtcBuilder.ditherAtkinson4Level(paperLuma, w, h)
+        for (y in 1 until h - 1) {
+            assertEquals(XtcBuilder.LEVEL_BLACK, paperLevels[y * w + 2])
+            val expectedEdge = if (y % 2 == 0) XtcBuilder.LEVEL_DARK_GRAY else XtcBuilder.LEVEL_LIGHT_GRAY
+            assertEquals(expectedEdge, paperLevels[y * w + 3])
+            // Surrounding white paper must have zero dithered gray dots
+            for (x in 4 until w) {
+                assertEquals("Unexpected dither bleed at ($x, $y)", XtcBuilder.LEVEL_WHITE, paperLevels[y * w + x])
+            }
+        }
+
+        // Smooth #AAAAAA box (170f) with black stroke at x=2 (0f) and dark-gray AA edge at x=3 (95f)
+        val boxLuma = FloatArray(w * h) { 170f }
+        for (y in 1 until h - 1) {
+            boxLuma[y * w + 2] = 0f
+            boxLuma[y * w + 3] = 95f
+        }
+        val boxLevels = XtcBuilder.ditherAtkinson4Level(boxLuma, w, h)
+        for (y in 1 until h - 1) {
+            assertEquals(XtcBuilder.LEVEL_BLACK, boxLevels[y * w + 2])
+            assertEquals(XtcBuilder.LEVEL_DARK_GRAY, boxLevels[y * w + 3])
+            for (x in 4 until w) {
+                assertEquals("Unexpected dither bleed in gray box at ($x, $y)", XtcBuilder.LEVEL_LIGHT_GRAY, boxLevels[y * w + x])
+            }
+        }
+    }
+
+    @Test
+    fun `ditherAtkinson4Level preserves multi-level dithering across continuous photo gradients`() {
+        val w = 16
+        val h = 8
+        val gradient = FloatArray(w * h) { idx ->
+            val x = idx % w
+            // Smooth gradient between 135 and 215 (between LEVEL_LIGHT_GRAY and LEVEL_WHITE)
+            135f + (x / (w - 1f)) * 80f
+        }
+        val levels = XtcBuilder.ditherAtkinson4Level(gradient, w, h)
+        val distinct = levels.toSet()
+        assertTrue("Expected dithering across light gray and white in gradient, got $distinct",
+            distinct.contains(XtcBuilder.LEVEL_LIGHT_GRAY) && distinct.contains(XtcBuilder.LEVEL_WHITE))
+    }
 }

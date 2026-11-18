@@ -444,6 +444,10 @@ body {
     margin: 0;
     padding: 0;
     line-height: 1.45;
+    color: #000000;
+}
+a {
+    color: #000000;
 }
 h1, h2, h3, h4 {
     font-weight: bold;
@@ -457,14 +461,14 @@ h1.article-title {
 }
 .subtitle {
     font-size: 0.95em;
-    color: #333;
+    color: #000000;
     font-style: italic;
     margin: 0.25em 0 0.5em 0;
     line-height: 1.35;
 }
 .byline {
     font-size: 0.82em;
-    color: #555;
+    color: #000000;
     margin: 0.1em 0 0.8em 0;
     line-height: 1.2;
 }
@@ -515,7 +519,7 @@ figure {
 }
 figcaption {
     font-size: 0.85em;
-    color: #555;
+    color: #000000;
     font-style: italic;
     margin-top: 0.3em;
     text-align: center;

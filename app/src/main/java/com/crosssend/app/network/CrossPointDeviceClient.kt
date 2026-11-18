@@ -302,6 +302,7 @@ class CrossPointDeviceClient(
                     }
                 } catch (_: Exception) {}
 
+                resolveWifiManager()?.onTransferProgress()
                 Result.success(status)
             }
         } catch (e: Exception) {

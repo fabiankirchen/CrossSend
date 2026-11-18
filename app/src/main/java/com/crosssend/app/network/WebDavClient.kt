@@ -140,9 +140,9 @@ class WebDavClient(
         ?.getString("base_url", initialBaseUrl) ?: initialBaseUrl
 
     private val baseClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
@@ -248,14 +248,21 @@ class WebDavClient(
                 .get()
                 .build()
             client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) return@withContext true
+                if (response.isSuccessful) {
+                    resolveWifiManager()?.onTransferProgress()
+                    return@withContext true
+                }
             }
         } catch (_: Exception) {}
 
         try {
             val headRequest = Request.Builder().url(baseUrl).head().build()
             client.newCall(headRequest).execute().use { response ->
-                response.isSuccessful || response.code in listOf(200, 207, 405)
+                val ok = response.isSuccessful || response.code in listOf(200, 207, 405)
+                if (ok) {
+                    resolveWifiManager()?.onTransferProgress()
+                }
+                ok
             }
         } catch (e: Exception) {
             Log.d(tag, "isReachable failed for $baseUrl: ${e.message}")
@@ -282,6 +289,7 @@ class WebDavClient(
                     .build()
                 val request = Request.Builder().url("$baseUrl/mkdir").post(formBody).build()
                 client.newCall(request).execute().close()
+                resolveWifiManager()?.onTransferProgress()
                 current += "/$part"
             }
             return@withContext true
@@ -298,6 +306,7 @@ class WebDavClient(
             val mkcolRequest = Request.Builder().url(url).method("MKCOL", null).build()
             try {
                 client.newCall(mkcolRequest).execute().close()
+                resolveWifiManager()?.onTransferProgress()
             } catch (e: Exception) {
                 notifyIfUnreachable(e)
             }
@@ -336,6 +345,7 @@ class WebDavClient(
                                 )
                             )
                         }
+                        resolveWifiManager()?.onTransferProgress()
                         Log.d(tag, "Native /api/files returned ${items.size} items for $cleanPath")
                         return@withContext Result.success(items)
                     }
@@ -376,7 +386,8 @@ class WebDavClient(
                 }
 
                 val xmlBody = response.body?.let { EInkImageOptimizer.readBoundedString(it, 5L * 1024 * 1024) }
-                    ?: return@withContext Result.success(emptyList())
+                resolveWifiManager()?.onTransferProgress()
+                if (xmlBody == null) return@withContext Result.success(emptyList())
                 Result.success(parsePropfindXml(xmlBody, cleanPath))
             }
         } catch (e: Exception) {
@@ -420,13 +431,18 @@ class WebDavClient(
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 when (val frame = parseWsServerFrame(text)) {
-                    is WsServerFrame.Ready -> readyLatch.countDown()
+                    is WsServerFrame.Ready -> {
+                        resolveWifiManager()?.onTransferProgress()
+                        readyLatch.countDown()
+                    }
                     is WsServerFrame.Progress -> {
+                        resolveWifiManager()?.onTransferProgress()
                         if (frame.total > 0) {
                             onProgress?.invoke((frame.received.toFloat() / frame.total.toFloat()).coerceIn(0f, 1f))
                         }
                     }
                     is WsServerFrame.Done -> {
+                        resolveWifiManager()?.onTransferProgress()
                         wsSucceeded.set(true)
                         onProgress?.invoke(1f)
                         doneLatch.countDown()
@@ -508,6 +524,7 @@ class WebDavClient(
                     if (!webSocket.send(buffer.toByteString(0, read))) {
                         throw IOException("WebSocket send returned false")
                     }
+                    resolveWifiManager()?.onTransferProgress()
                 }
             }
 
@@ -535,111 +552,123 @@ class WebDavClient(
         onProgress: ((Float) -> Unit)? = null
     ): Boolean = withContext(Dispatchers.IO) {
         val cleanPath = sanitizeRemotePath(remotePath)
-
-        // 1. Try CrossPoint v2.0 WebSocket Fast Binary Upload (Port 81)
-        if (uploadFileViaWebSocket(localFile, cleanPath, onProgress)) {
-            return@withContext true
-        }
-
-        // 2. Fallback to native CrossPoint HTTP upload endpoint (/upload?dir=<targetDir>&overwrite=1)
-        var nativeException: Exception? = null
+        val wifiMgr = resolveWifiManager()
+        wifiMgr?.onTransferStarted()
         try {
-            val uploadUrl = buildHttpUploadUrl(baseUrl, cleanPath)
+            // 1. Try CrossPoint v2.0 WebSocket Fast Binary Upload (Port 81)
+            if (uploadFileViaWebSocket(localFile, cleanPath, onProgress)) {
+                wifiMgr?.onTransferProgress()
+                return@withContext true
+            }
 
-            val targetFileName = cleanPath.substringAfterLast('/')
-            val uploadFileName = if (targetFileName.isNotBlank()) targetFileName else localFile.name
+            // 2. Fallback to native CrossPoint HTTP upload endpoint (/upload?dir=<targetDir>&overwrite=1)
+            var nativeException: Exception? = null
+            try {
+                val uploadUrl = buildHttpUploadUrl(baseUrl, cleanPath)
 
-            val fileBody = object : RequestBody() {
-                override fun contentType() = "application/octet-stream".toMediaType()
-                override fun contentLength() = localFile.length()
+                val targetFileName = cleanPath.substringAfterLast('/')
+                val uploadFileName = if (targetFileName.isNotBlank()) targetFileName else localFile.name
 
-                override fun writeTo(sink: BufferedSink) {
-                    val buffer = ByteArray(8192)
-                    var uploaded = 0L
-                    val total = localFile.length()
-                    localFile.inputStream().use { input ->
-                        var read: Int
-                        while (input.read(buffer).also { read = it } != -1) {
-                            sink.write(buffer, 0, read)
-                            uploaded += read
-                            if (total > 0) {
-                                onProgress?.invoke(uploaded.toFloat() / total)
+                val fileBody = object : RequestBody() {
+                    override fun contentType() = "application/octet-stream".toMediaType()
+                    override fun contentLength() = localFile.length()
+
+                    override fun writeTo(sink: BufferedSink) {
+                        val buffer = ByteArray(8192)
+                        var uploaded = 0L
+                        val total = localFile.length()
+                        localFile.inputStream().use { input ->
+                            var read: Int
+                            while (input.read(buffer).also { read = it } != -1) {
+                                sink.write(buffer, 0, read)
+                                uploaded += read
+                                wifiMgr?.onTransferProgress()
+                                if (total > 0) {
+                                    onProgress?.invoke(uploaded.toFloat() / total)
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            val multipartBody = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart("file", uploadFileName, fileBody)
-                .build()
+                val multipartBody = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("file", uploadFileName, fileBody)
+                    .build()
 
-            val request = Request.Builder()
-                .url(uploadUrl)
-                .post(multipartBody)
-                .build()
+                val request = Request.Builder()
+                    .url(uploadUrl)
+                    .post(multipartBody)
+                    .build()
 
-            client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    Log.d(tag, "Native upload of $uploadFileName to $uploadUrl succeeded")
-                    return@withContext true
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        wifiMgr?.onTransferProgress()
+                        Log.d(tag, "Native upload of $uploadFileName to $uploadUrl succeeded")
+                        return@withContext true
+                    }
                 }
-            }
-        } catch (e: Exception) {
-            nativeException = e
-            Log.d(tag, "Native /upload failed, falling back to WebDAV PUT: ${e.message}")
-        }
-
-        // 3. Fallback to WebDAV PUT
-        val encodedPath = cleanPath.split("/").joinToString("/") { segment ->
-            if (segment.isEmpty()) "" else URLEncoder.encode(segment, "UTF-8").replace("+", "%20")
-        }
-        val url = "$baseUrl$encodedPath"
-        try {
-            val mediaType = when {
-                localFile.name.endsWith(".epub", true) -> "application/epub+zip".toMediaType()
-                localFile.name.endsWith(".md", true) -> "text/markdown; charset=utf-8".toMediaType()
-                else -> "application/octet-stream".toMediaType()
+            } catch (e: Exception) {
+                nativeException = e
+                Log.d(tag, "Native /upload failed, falling back to WebDAV PUT: ${e.message}")
             }
 
-            val requestBody = object : RequestBody() {
-                override fun contentType() = mediaType
-                override fun contentLength() = localFile.length()
+            // 3. Fallback to WebDAV PUT
+            val encodedPath = cleanPath.split("/").joinToString("/") { segment ->
+                if (segment.isEmpty()) "" else URLEncoder.encode(segment, "UTF-8").replace("+", "%20")
+            }
+            val url = "$baseUrl$encodedPath"
+            try {
+                val mediaType = when {
+                    localFile.name.endsWith(".epub", true) -> "application/epub+zip".toMediaType()
+                    localFile.name.endsWith(".md", true) -> "text/markdown; charset=utf-8".toMediaType()
+                    else -> "application/octet-stream".toMediaType()
+                }
 
-                override fun writeTo(sink: BufferedSink) {
-                    val buffer = ByteArray(8192)
-                    var uploaded = 0L
-                    val total = localFile.length()
+                val requestBody = object : RequestBody() {
+                    override fun contentType() = mediaType
+                    override fun contentLength() = localFile.length()
 
-                    localFile.inputStream().use { input ->
-                        var read: Int
-                        while (input.read(buffer).also { read = it } != -1) {
-                            sink.write(buffer, 0, read)
-                            uploaded += read
-                            if (total > 0) {
-                                onProgress?.invoke(uploaded.toFloat() / total)
+                    override fun writeTo(sink: BufferedSink) {
+                        val buffer = ByteArray(8192)
+                        var uploaded = 0L
+                        val total = localFile.length()
+
+                        localFile.inputStream().use { input ->
+                            var read: Int
+                            while (input.read(buffer).also { read = it } != -1) {
+                                sink.write(buffer, 0, read)
+                                uploaded += read
+                                wifiMgr?.onTransferProgress()
+                                if (total > 0) {
+                                    onProgress?.invoke(uploaded.toFloat() / total)
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            val request = Request.Builder()
-                .url(url)
-                .put(requestBody)
-                .build()
+                val request = Request.Builder()
+                    .url(url)
+                    .put(requestBody)
+                    .build()
 
-            client.newCall(request).execute().use { response ->
-                val success = response.code in 200..299
-                Log.d(tag, "PUT $url returned ${response.code}, success: $success")
-                success
+                client.newCall(request).execute().use { response ->
+                    val success = response.code in 200..299
+                    if (success) {
+                        wifiMgr?.onTransferProgress()
+                    }
+                    Log.d(tag, "PUT $url returned ${response.code}, success: $success")
+                    success
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "Failed to upload ${localFile.name} to $url", e)
+                notifyIfUnreachable(e)
+                nativeException?.let { notifyIfUnreachable(it) }
+                false
             }
-        } catch (e: Exception) {
-            Log.e(tag, "Failed to upload ${localFile.name} to $url", e)
-            notifyIfUnreachable(e)
-            nativeException?.let { notifyIfUnreachable(it) }
-            false
+        } finally {
+            wifiMgr?.onTransferFinished()
         }
     }
 
@@ -679,12 +708,14 @@ class WebDavClient(
                                         throw IOException("Downloaded file exceeds 100 MB safety limit")
                                     }
                                     output.write(buffer, 0, read)
+                                    resolveWifiManager()?.onTransferProgress()
                                     if (totalLength > 0) {
                                         onProgress?.invoke(downloaded.toFloat() / totalLength)
                                     }
                                 }
                             }
                         }
+                        resolveWifiManager()?.onTransferProgress()
                         Log.d(tag, "Native download of $cleanPath succeeded")
                         return@withContext true
                     }
@@ -727,12 +758,14 @@ class WebDavClient(
                                 throw IOException("Downloaded file exceeds 100 MB safety limit")
                             }
                             output.write(buffer, 0, read)
+                            resolveWifiManager()?.onTransferProgress()
                             if (totalLength > 0) {
                                 onProgress?.invoke(downloaded.toFloat() / totalLength)
                             }
                         }
                     }
                 }
+                resolveWifiManager()?.onTransferProgress()
                 Log.d(tag, "Downloaded $cleanPath to ${destinationFile.absolutePath}")
                 true
             }
@@ -762,6 +795,7 @@ class WebDavClient(
             val request = Request.Builder().url(deleteUrl).post(formBody).build()
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
+                    resolveWifiManager()?.onTransferProgress()
                     Log.d(tag, "Native delete of $cleanPath succeeded")
                     return@withContext true
                 }
@@ -780,6 +814,9 @@ class WebDavClient(
             val request = Request.Builder().url(url).delete().build()
             client.newCall(request).execute().use { response ->
                 val success = response.code in 200..299 || response.code == 404
+                if (success) {
+                    resolveWifiManager()?.onTransferProgress()
+                }
                 Log.d(tag, "DELETE $url returned ${response.code}, success: $success")
                 success
             }
@@ -852,7 +889,10 @@ class WebDavClient(
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     val str = response.body?.let { EInkImageOptimizer.readBoundedString(it, 5L * 1024 * 1024) }
-                    if (str != null) return@withContext str
+                    if (str != null) {
+                        resolveWifiManager()?.onTransferProgress()
+                        return@withContext str
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -868,6 +908,7 @@ class WebDavClient(
             val request = Request.Builder().url(url).get().build()
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
+                    resolveWifiManager()?.onTransferProgress()
                     response.body?.let { EInkImageOptimizer.readBoundedString(it, 5L * 1024 * 1024) }
                 } else null
             }

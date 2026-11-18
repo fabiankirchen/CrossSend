@@ -159,12 +159,14 @@ object XtcBuilder {
         return encodeXthPage(w, h, levels)
     }
 
-    private fun applyEInkContrast(y: Float): Float {
-        // Snap near-white paper backgrounds cleanly to pure 255 and deep text to 0
-        if (y >= 242f) return 255f
-        if (y <= 28f) return 0f
-        val norm = ((y - 128f) * 1.15f + 128f).coerceIn(0f, 255f)
-        return norm
+    internal fun applyEInkContrast(y: Float): Float {
+        // Snap near-white paper backgrounds cleanly to pure 255 and deep text/glyphs to pure 0
+        if (y >= 240f) return 255f
+        if (y <= 68f) return 0f
+        // Preserve native E-Ink hardware gray levels (LEVEL_LIGHT_GRAY=170, LEVEL_DARK_GRAY=85) for dither-free UI surfaces
+        if (y in 168f..172f) return 170f
+        if (y in 83f..87f) return 85f
+        return ((y - 128f) * 1.15f + 128f).coerceIn(0f, 255f)
     }
 
     /**
@@ -187,6 +189,14 @@ object XtcBuilder {
                     else -> 0f to LEVEL_BLACK
                 }
                 out[idx] = level
+
+                // Suppress error diffusion on antialiased glyph edges next to clean white/light-gray backgrounds
+                // so rounded strokes use E-Ink grays without bleeding dither dots into surrounding space.
+                val rawCenter = luminance[idx]
+                if (rawCenter in 69f..237f && isTextToBackgroundEdge(luminance, width, height, x, y)) {
+                    continue
+                }
+
                 val err = (oldVal - newVal) / 8f
                 if (err == 0f) continue
 
@@ -204,6 +214,34 @@ object XtcBuilder {
             }
         }
         return out
+    }
+
+    private fun isTextToBackgroundEdge(
+        luminance: FloatArray,
+        width: Int,
+        height: Int,
+        cx: Int,
+        cy: Int
+    ): Boolean {
+        var hasBlack = false
+        var hasCleanBg = false
+        val yMin = maxOf(0, cy - 1)
+        val yMax = minOf(height - 1, cy + 1)
+        val xMin = maxOf(0, cx - 1)
+        val xMax = minOf(width - 1, cx + 1)
+        for (ny in yMin..yMax) {
+            val row = ny * width
+            for (nx in xMin..xMax) {
+                val v = luminance[row + nx]
+                if (v <= 68f) {
+                    hasBlack = true
+                } else if (v >= 238f || (v in 168f..172f)) {
+                    hasCleanBg = true
+                }
+                if (hasBlack && hasCleanBg) return true
+            }
+        }
+        return false
     }
 
     /**

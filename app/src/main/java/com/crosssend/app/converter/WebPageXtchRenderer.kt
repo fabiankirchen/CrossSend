@@ -142,16 +142,16 @@ object WebPageXtchRenderer {
             val hostContext = activeActivity ?: context.applicationContext
 
             val metrics = hostContext.resources.displayMetrics
-            val density = metrics.density.coerceAtLeast(1f)
-            val densityDpi = metrics.densityDpi.coerceAtLeast(160)
+            val virtualDensity = (targetW.toFloat() / CSS_MOBILE_WIDTH).coerceAtLeast(1f)
+            val virtualDensityDpi = (virtualDensity * 160f).roundToInt().coerceIn(120, 480)
             val topMarginTargetPx = (targetH * 0.0225f).roundToInt().coerceIn(8, 24)
             val bottomMarginTargetPx = (targetH * 0.0175f).roundToInt().coerceIn(6, 20)
             val usableTargetH = (targetH - topMarginTargetPx - bottomMarginTargetPx).coerceAtLeast(100)
 
             val cssW = CSS_MOBILE_WIDTH.roundToInt()
             val cssH = (CSS_MOBILE_WIDTH * usableTargetH.toFloat() / targetW.toFloat()).roundToInt().coerceAtLeast(200)
-            val viewW = (cssW * density).roundToInt().coerceAtLeast(targetW)
-            val viewH = (cssH * density).roundToInt().coerceAtLeast(usableTargetH)
+            var viewW = targetW
+            var viewH = usableTargetH
 
             var imageReader: ImageReader? = null
             var virtualDisplay: VirtualDisplay? = null
@@ -187,7 +187,7 @@ object WebPageXtchRenderer {
                             "CrossSendXtchRender",
                             viewW,
                             viewH,
-                            densityDpi,
+                            virtualDensityDpi,
                             reader.surface,
                             DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
                         )
@@ -216,6 +216,9 @@ object WebPageXtchRenderer {
                 }
 
                 if (!presentationAttached && decorView != null) {
+                    val fallbackDensity = metrics.density.coerceAtLeast(1f)
+                    viewW = (cssW * fallbackDensity).roundToInt().coerceAtLeast(targetW)
+                    viewH = (cssH * fallbackDensity).roundToInt().coerceAtLeast(usableTargetH)
                     val container = FrameLayout(hostContext).apply {
                         layoutParams = ViewGroup.LayoutParams(viewW, viewH)
                         translationZ = -1f
@@ -510,11 +513,12 @@ object WebPageXtchRenderer {
                             viewW = viewW,
                             targetW = targetW
                         )
+                        val copyPaint = if (viewW == targetW && visibleViewH == visibleTargetH) null else downsamplePaint
                         pageCanvas.drawBitmap(
                             viewBitmap,
                             Rect(0, 0, viewW, visibleViewH),
                             Rect(0, topMarginTargetPx, targetW, topMarginTargetPx + visibleTargetH),
-                            downsamplePaint
+                            copyPaint
                         )
 
                         if (index == 0 || index == cuts.lastIndex) {
@@ -801,7 +805,8 @@ object WebPageXtchRenderer {
         return """
             (function() {
                 try {
-                    var pageW = $fallbackCssW;
+                    var actualViewportW = Math.round(window.innerWidth || 0);
+                    var pageW = (actualViewportW >= 200 && actualViewportW <= $fallbackCssW + 8) ? actualViewportW : $fallbackCssW;
                     var pageH = $fallbackCssH;
 
                     var metaVp = document.querySelector('meta[name="viewport"]');
@@ -841,6 +846,57 @@ object WebPageXtchRenderer {
                             '*::-webkit-scrollbar { display: none !important; }';
                         (document.head || document.documentElement).appendChild(style);
                     }
+
+                    ${if (lightenDark) """
+                    try {
+                        if (!document.documentElement.dataset.xtchInverted) {
+                            function parseOpaqueLuma(bgStr) {
+                                if (!bgStr) return null;
+                                var m = bgStr.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/);
+                                if (!m) return null;
+                                var alpha = (m[4] !== undefined) ? parseFloat(m[4]) : 1.0;
+                                if (isNaN(alpha) || alpha < 0.5) return null;
+                                return 0.299 * (+m[1]) + 0.587 * (+m[2]) + 0.114 * (+m[3]);
+                            }
+                            var bodyLuma = document.body ? parseOpaqueLuma(window.getComputedStyle(document.body).backgroundColor) : null;
+                            var rootLuma = parseOpaqueLuma(window.getComputedStyle(document.documentElement).backgroundColor);
+                            var effectiveLuma = (bodyLuma !== null) ? bodyLuma : rootLuma;
+                            if (effectiveLuma !== null && effectiveLuma < 85) {
+                                document.documentElement.dataset.xtchInverted = '1';
+                                document.documentElement.style.setProperty('background', '#000000', 'important');
+                                document.documentElement.style.setProperty('filter', 'invert(1) hue-rotate(180deg)', 'important');
+                                var imgs = document.querySelectorAll('img, picture, video');
+                                for (var j = 0; j < imgs.length; j++) {
+                                    imgs[j].style.setProperty('filter', 'invert(1) hue-rotate(180deg)', 'important');
+                                }
+                            }
+                        }
+                    } catch (e2) {}
+                    """ else ""}
+
+                    var isInverted = document.documentElement.dataset.xtchInverted === '1';
+                    var textHex = isInverted ? '#ffffff' : '#000000';
+                    var textStyle = document.getElementById('__xtch_text_style');
+                    if (!textStyle) {
+                        textStyle = document.createElement('style');
+                        textStyle.id = '__xtch_text_style';
+                        (document.head || document.documentElement).appendChild(textStyle);
+                    }
+                    textStyle.textContent =
+                        'body, p, li, dt, dd, blockquote, figcaption, td, th, article, section, main, ' +
+                        'h1, h2, h3, h4, h5, h6, span, a, strong, em, b, i, small, time, label, ' +
+                        'code, pre, cite, q, mark, summary { ' +
+                        'color: ' + textHex + ' !important; -webkit-text-fill-color: ' + textHex + ' !important; ' +
+                        'text-shadow: none !important; opacity: 1 !important; ' +
+                        'mask-image: none !important; -webkit-mask-image: none !important; } ' +
+                        'div, button, address, caption, legend, del, ins, sub, sup, abbr, dfn, kbd, samp, var { ' +
+                        'color: ' + textHex + ' !important; -webkit-text-fill-color: ' + textHex + ' !important; ' +
+                        'text-shadow: none !important; } ' +
+                        '.__xtch_dark_bg, .__xtch_dark_bg * { ' +
+                        'color: #ffffff !important; -webkit-text-fill-color: #ffffff !important; text-shadow: none !important; } ' +
+                        '.__xtch_dark_bg .__xtch_light_bg, .__xtch_dark_bg .__xtch_light_bg * { ' +
+                        'color: #000000 !important; -webkit-text-fill-color: #000000 !important; text-shadow: none !important; }';
+
                     if (document.body) { void document.body.offsetHeight; }
 
                     var bannerRe = /(cookie|consent|onetrust|didomi|gdpr|cmp-|CybotCookiebot|privacy-banner|modal-backdrop|paywall-overlay|interstitial|sticky-nav|floating-nav|smartbanner|app-banner|install-banner|donate-banner|frb-nag|mw-dismissable-notice|site-notice|app-promo)/i;
@@ -887,34 +943,34 @@ object WebPageXtchRenderer {
                                 el.style.setProperty('display', 'none', 'important');
                             }
                         }
-                    }
 
-                    ${if (lightenDark) """
-                    try {
-                        if (!document.documentElement.dataset.xtchInverted) {
-                            function parseOpaqueLuma(bgStr) {
-                                if (!bgStr) return null;
-                                var m = bgStr.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/);
-                                if (!m) return null;
-                                var alpha = (m[4] !== undefined) ? parseFloat(m[4]) : 1.0;
-                                if (isNaN(alpha) || alpha < 0.5) return null;
-                                return 0.299 * (+m[1]) + 0.587 * (+m[2]) + 0.114 * (+m[3]);
-                            }
-                            var bodyLuma = document.body ? parseOpaqueLuma(window.getComputedStyle(document.body).backgroundColor) : null;
-                            var rootLuma = parseOpaqueLuma(window.getComputedStyle(document.documentElement).backgroundColor);
-                            var effectiveLuma = (bodyLuma !== null) ? bodyLuma : rootLuma;
-                            if (effectiveLuma !== null && effectiveLuma < 85) {
-                                document.documentElement.dataset.xtchInverted = '1';
-                                document.documentElement.style.setProperty('background', '#000000', 'important');
-                                document.documentElement.style.setProperty('filter', 'invert(1) hue-rotate(180deg)', 'important');
-                                var imgs = document.querySelectorAll('img, picture, video');
-                                for (var j = 0; j < imgs.length; j++) {
-                                    imgs[j].style.setProperty('filter', 'invert(1) hue-rotate(180deg)', 'important');
+                        if (!isInverted && el.style.display !== 'none' && cs.display !== 'none' && cs.visibility !== 'hidden') {
+                            var bgMatch = cs.backgroundColor && cs.backgroundColor.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/);
+                            if (bgMatch) {
+                                var bgAlpha = (bgMatch[4] !== undefined) ? parseFloat(bgMatch[4]) : 1.0;
+                                if (!isNaN(bgAlpha) && bgAlpha >= 0.5) {
+                                    var bgLuma = 0.299 * (+bgMatch[1]) + 0.587 * (+bgMatch[2]) + 0.114 * (+bgMatch[3]);
+                                    if (bgLuma < 90) {
+                                        el.classList.add('__xtch_dark_bg');
+                                        el.classList.remove('__xtch_light_bg');
+                                    } else if (bgLuma >= 140 && el.closest && el.closest('.__xtch_dark_bg')) {
+                                        el.classList.add('__xtch_light_bg');
+                                    } else if (bgLuma >= 180 && bgLuma <= 243) {
+                                        var hasBgImg = cs.backgroundImage && cs.backgroundImage !== 'none';
+                                        if (!hasBgImg && tag !== 'main' && tag !== 'article' && tag !== 'img' && tag !== 'svg' && tag !== 'picture' && tag !== 'canvas' && tag !== 'video') {
+                                            var boxR = el.getBoundingClientRect();
+                                            var isBoxTag = (tag === 'pre' || tag === 'code' || tag === 'kbd' || tag === 'blockquote' ||
+                                                tag === 'th' || tag === 'mark' || tag === 'aside' || tag === 'details' || tag === 'fieldset');
+                                            var isFullPageWrapper = boxR.width >= pageW * 0.95 && boxR.height >= pageH * 1.5;
+                                            if ((isBoxTag || !isFullPageWrapper) && boxR.width >= 16 && boxR.height >= 12 && (isBoxTag || bgLuma <= 236)) {
+                                                el.style.setProperty('background-color', '#aaaaaa', 'important');
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
-                    } catch (e2) {}
-                    """ else ""}
+                    }
                 } catch (err) {}
             })();
         """.trimIndent()

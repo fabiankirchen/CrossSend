@@ -38,6 +38,7 @@ import java.net.NetworkInterface
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 sealed class WifiConnectionState {
     object Disconnected : WifiConnectionState()
@@ -72,6 +73,30 @@ class CrossPointWifiManager(
     @Volatile
     private var resumeProbeJob: Job? = null
     private val unreachableProbeInFlight = AtomicBoolean(false)
+    private val activeTransferCount = AtomicInteger(0)
+
+    fun onTransferStarted() {
+        activeTransferCount.incrementAndGet()
+        lastSuccessfulContactMs = System.currentTimeMillis()
+    }
+
+    fun onTransferProgress() {
+        lastSuccessfulContactMs = System.currentTimeMillis()
+    }
+
+    fun onTransferFinished() {
+        activeTransferCount.updateAndGet { current -> if (current > 0) current - 1 else 0 }
+        lastSuccessfulContactMs = System.currentTimeMillis()
+    }
+
+    fun isTransferInProgress(): Boolean {
+        val syncActive = try {
+            CrossSendApp.instance.syncManager.isSyncing.value
+        } catch (_: Exception) {
+            false
+        }
+        return activeTransferCount.get() > 0 || syncActive
+    }
 
     private val probeBaseClient: okhttp3.OkHttpClient = okhttp3.OkHttpClient.Builder()
         .connectTimeout(WATCHDOG_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -338,10 +363,31 @@ class CrossPointWifiManager(
         cachedApProbeClient = null
     }
 
+    private fun resolveActiveWifiNetwork(): Network? {
+        val active = try { connectivityManager.activeNetwork } catch (_: Exception) { null }
+        val activeCaps = active?.let {
+            try { connectivityManager.getNetworkCapabilities(it) } catch (_: Exception) { null }
+        }
+        if (active != null && activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+            return active
+        }
+        return wifiNetworks.keys.firstOrNull()
+    }
+
     /**
-     * Returns the dedicated Network object for the reader AP if currently connected.
+     * Returns the dedicated Network object for the reader AP if currently connected
+     * or if the device is communicating with the 192.168.4.x hotspot subnet.
      */
-    fun getApNetwork(): Network? = boundNetwork
+    fun getApNetwork(): Network? {
+        boundNetwork?.let { return it }
+        val state = _connectionState.value
+        val isHotspotTarget = state is WifiConnectionState.ConnectedToCrossPointAp ||
+            (state is WifiConnectionState.ConnectedOnLocalNetwork && state.ip.contains("192.168.4."))
+        if (isHotspotTarget || isPhoneOnHotspotSubnet()) {
+            return resolveActiveWifiNetwork()
+        }
+        return null
+    }
 
     /**
      * Finds an active network with verified INTERNET capability (e.g. Mobile Data or WAN Wi-Fi).
@@ -417,6 +463,14 @@ class CrossPointWifiManager(
         startReachabilityWatchdog()
     }
 
+    private fun setConnectedToHotspot(ip: String = "192.168.4.1") {
+        if (boundNetwork == null) {
+            boundNetwork = resolveActiveWifiNetwork()
+        }
+        _connectionState.value = WifiConnectionState.ConnectedToCrossPointAp(ip)
+        startReachabilityWatchdog()
+    }
+
     private fun startReachabilityWatchdog() {
         synchronized(watchdogLock) {
             watchdogJob?.cancel()
@@ -427,12 +481,20 @@ class CrossPointWifiManager(
                     delay(WATCHDOG_INTERVAL_MS)
                     val state = _connectionState.value
                     val (targetUrl, apNet) = when (state) {
-                        is WifiConnectionState.ConnectedToCrossPointAp -> "http://${state.ip}" to boundNetwork
-                        is WifiConnectionState.ConnectedOnLocalNetwork -> normalizeHttpUrl(state.ip) to null
+                        is WifiConnectionState.ConnectedToCrossPointAp -> "http://${state.ip}" to getApNetwork()
+                        is WifiConnectionState.ConnectedOnLocalNetwork -> {
+                            val net = if (state.ip.contains("192.168.4.")) getApNetwork() else null
+                            normalizeHttpUrl(state.ip) to net
+                        }
                         else -> break
                     }
 
-                    if (state is WifiConnectionState.ConnectedToCrossPointAp && apNet == null) {
+                    if (isTransferInProgress() || System.currentTimeMillis() - lastSuccessfulContactMs < WATCHDOG_INTERVAL_MS) {
+                        consecutiveFailures = 0
+                        continue
+                    }
+
+                    if (state is WifiConnectionState.ConnectedToCrossPointAp && apNet == null && !isPhoneOnHotspotSubnet()) {
                         transitionToDisconnected(state)
                         break
                     }
@@ -441,10 +503,12 @@ class CrossPointWifiManager(
                     if (reachable) {
                         consecutiveFailures = 0
                         lastSuccessfulContactMs = System.currentTimeMillis()
+                    } else if (isTransferInProgress() || System.currentTimeMillis() - lastSuccessfulContactMs < WATCHDOG_INTERVAL_MS) {
+                        consecutiveFailures = 0
                     } else {
                         consecutiveFailures++
-                        Log.d(tag, "Watchdog probe failed ($consecutiveFailures/2) for $targetUrl")
-                        if (consecutiveFailures >= 2) {
+                        Log.d(tag, "Watchdog probe failed ($consecutiveFailures/$WATCHDOG_MAX_FAILURES) for $targetUrl")
+                        if (consecutiveFailures >= WATCHDOG_MAX_FAILURES) {
                             Log.w(tag, "Watchdog lost reachability to $targetUrl; transitioning to Disconnected")
                             transitionToDisconnected(state)
                             break
@@ -509,6 +573,9 @@ class CrossPointWifiManager(
      * Verifies device reachability asynchronously and transitions stale connections to Disconnected.
      */
     fun reportDeviceUnreachable() {
+        if (isTransferInProgress() || System.currentTimeMillis() - lastSuccessfulContactMs < UNREACHABLE_GRACE_MS) {
+            return
+        }
         val state = _connectionState.value
         if (state !is WifiConnectionState.ConnectedOnLocalNetwork &&
             state !is WifiConnectionState.ConnectedToCrossPointAp
@@ -519,20 +586,26 @@ class CrossPointWifiManager(
 
         scope.launch {
             try {
+                if (isTransferInProgress() || System.currentTimeMillis() - lastSuccessfulContactMs < UNREACHABLE_GRACE_MS) {
+                    return@launch
+                }
                 val current = _connectionState.value
                 val (targetUrl, apNet) = when (current) {
-                    is WifiConnectionState.ConnectedToCrossPointAp -> "http://${current.ip}" to boundNetwork
-                    is WifiConnectionState.ConnectedOnLocalNetwork -> normalizeHttpUrl(current.ip) to null
+                    is WifiConnectionState.ConnectedToCrossPointAp -> "http://${current.ip}" to getApNetwork()
+                    is WifiConnectionState.ConnectedOnLocalNetwork -> {
+                        val net = if (current.ip.contains("192.168.4.")) getApNetwork() else null
+                        normalizeHttpUrl(current.ip) to net
+                    }
                     else -> return@launch
                 }
-                if (current is WifiConnectionState.ConnectedToCrossPointAp && apNet == null) {
+                if (current is WifiConnectionState.ConnectedToCrossPointAp && apNet == null && !isPhoneOnHotspotSubnet()) {
                     transitionToDisconnected(current)
                     return@launch
                 }
                 val reachable = probeStatusEndpoint(targetUrl, apNet, WATCHDOG_PROBE_TIMEOUT_MS)
                 if (reachable) {
                     lastSuccessfulContactMs = System.currentTimeMillis()
-                } else {
+                } else if (!isTransferInProgress() && System.currentTimeMillis() - lastSuccessfulContactMs >= UNREACHABLE_GRACE_MS) {
                     val staleMs = System.currentTimeMillis() - lastSuccessfulContactMs
                     Log.w(tag, "Device unreachable at $targetUrl (stale ${staleMs}ms); transitioning to Disconnected")
                     transitionToDisconnected(current)
@@ -553,11 +626,18 @@ class CrossPointWifiManager(
             resumeProbeJob = scope.launch {
                 val current = _connectionState.value
                 val (targetUrl, apNet) = when (current) {
-                    is WifiConnectionState.ConnectedToCrossPointAp -> "http://${current.ip}" to boundNetwork
-                    is WifiConnectionState.ConnectedOnLocalNetwork -> normalizeHttpUrl(current.ip) to null
+                    is WifiConnectionState.ConnectedToCrossPointAp -> "http://${current.ip}" to getApNetwork()
+                    is WifiConnectionState.ConnectedOnLocalNetwork -> {
+                        val net = if (current.ip.contains("192.168.4.")) getApNetwork() else null
+                        normalizeHttpUrl(current.ip) to net
+                    }
                     else -> return@launch
                 }
-                if (current is WifiConnectionState.ConnectedToCrossPointAp && apNet == null) {
+                if (isTransferInProgress()) {
+                    startReachabilityWatchdogIfIdle()
+                    return@launch
+                }
+                if (current is WifiConnectionState.ConnectedToCrossPointAp && apNet == null && !isPhoneOnHotspotSubnet()) {
                     transitionToDisconnected(current)
                     return@launch
                 }
@@ -565,7 +645,7 @@ class CrossPointWifiManager(
                 if (reachable) {
                     lastSuccessfulContactMs = System.currentTimeMillis()
                     startReachabilityWatchdogIfIdle()
-                } else {
+                } else if (!isTransferInProgress()) {
                     Log.d(tag, "On-resume probe failed for $targetUrl; transitioning to Disconnected")
                     transitionToDisconnected(current)
                 }
@@ -584,7 +664,8 @@ class CrossPointWifiManager(
         resumeProbeJob = scope.launch {
             val lanUrl = normalizeHttpUrl(getLanBaseUrl())
             val directMatch = if (!lanUrl.contains("192.168.4.1") || isPhoneOnHotspotSubnet()) {
-                if (probeStatusEndpoint(lanUrl, null, RESUME_LAN_PROBE_TIMEOUT_MS)) lanUrl else null
+                val probeNet = if (lanUrl.contains("192.168.4.")) getApNetwork() else null
+                if (probeStatusEndpoint(lanUrl, probeNet, RESUME_LAN_PROBE_TIMEOUT_MS)) lanUrl else null
             } else {
                 null
             }
@@ -595,7 +676,11 @@ class CrossPointWifiManager(
                     CrossSendApp.instance.webDavClient.updateBaseUrl(detected)
                 } catch (_: Exception) {}
                 if (_connectionState.value is WifiConnectionState.Disconnected) {
-                    setConnectedOnLan(detected)
+                    if (detected.contains("192.168.4.1")) {
+                        setConnectedToHotspot("192.168.4.1")
+                    } else {
+                        setConnectedOnLan(detected)
+                    }
                 }
             }
         }
@@ -718,7 +803,7 @@ class CrossPointWifiManager(
             coroutineScope {
                 val foundDeferred = CompletableDeferred<String>()
 
-                val boundNet = boundNetwork
+                val boundNet = getApNetwork()
                 val apProbeClient = getProbeClient(boundNet, 1200L)
                 val lanProbeClient = getProbeClient(null, 1200L)
 
@@ -857,7 +942,11 @@ class CrossPointWifiManager(
         }
 
         if (detectedUrl != null) {
-            setConnectedOnLan(detectedUrl)
+            if (detectedUrl.contains("192.168.4.1")) {
+                setConnectedToHotspot("192.168.4.1")
+            } else {
+                setConnectedOnLan(detectedUrl)
+            }
             Log.d(tag, "Auto-detected CrossPoint/CrossPlay at $detectedUrl")
         }
 
@@ -885,9 +974,15 @@ class CrossPointWifiManager(
         // 1. Try discovering CrossPoint on the local Wi-Fi network (LAN) first
         val detected = autoDetectCrossPoint(preferredUrl = getLanBaseUrl())
         if (detected != null) {
-            disconnectFromAp() // Ensure no stale AP network binding remains
-            webDavClient.updateBaseUrl(detected)
-            setConnectedOnLan(detected)
+            if (detected.contains("192.168.4.1")) {
+                // Keep boundNetwork intact (or bind active Wi-Fi) so Android never routes hotspot traffic over cellular
+                webDavClient.updateBaseUrl(detected)
+                setConnectedToHotspot("192.168.4.1")
+            } else {
+                disconnectFromAp() // Ensure no stale AP network binding remains
+                webDavClient.updateBaseUrl(detected)
+                setConnectedOnLan(detected)
+            }
             return true
         }
 
@@ -904,7 +999,9 @@ class CrossPointWifiManager(
     companion object {
         private const val PERMISSION_ACCESS_LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
         private const val WATCHDOG_INTERVAL_MS = 12_000L
-        private const val WATCHDOG_PROBE_TIMEOUT_MS = 1_800L
+        private const val WATCHDOG_PROBE_TIMEOUT_MS = 3_500L
+        private const val WATCHDOG_MAX_FAILURES = 3
+        private const val UNREACHABLE_GRACE_MS = 8_000L
         private const val RESUME_LAN_PROBE_TIMEOUT_MS = 1_500L
         private const val RESUME_DISCOVERY_THROTTLE_MS = 5_000L
     }

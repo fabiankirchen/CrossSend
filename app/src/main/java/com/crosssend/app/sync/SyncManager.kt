@@ -8,7 +8,9 @@ import com.crosssend.app.data.local.DocumentEntity
 import com.crosssend.app.data.model.DocumentType
 import com.crosssend.app.data.model.SyncResult
 import com.crosssend.app.data.model.SyncStatus
+import com.crosssend.app.network.CrossPointWifiManager
 import com.crosssend.app.network.WebDavClient
+import com.crosssend.app.network.WifiConnectionState
 import com.crosssend.app.util.DocumentPreviewReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +24,7 @@ class SyncManager(
     private val context: Context,
     private val documentDao: DocumentDao,
     private val webDavClient: WebDavClient,
+    private val wifiManager: CrossPointWifiManager? = null,
     private val onFetchRemoteArticle: (suspend (SyncManifestEntry) -> Boolean)? = null
 ) {
     private val tag = "SyncManager"
@@ -253,6 +256,15 @@ class SyncManager(
                     .filter { !it.isDirectory }
                     .map { it.name }
                     .toSet()
+                val resolvedWifiManager = wifiManager
+                    ?: (context.applicationContext as? com.crosssend.app.CrossSendApp)?.wifiManager
+                val isHotspotOffline = resolvedWifiManager != null && run {
+                    val connState = resolvedWifiManager.connectionState.value
+                    val onHotspot = connState is WifiConnectionState.ConnectedToCrossPointAp ||
+                        (connState is WifiConnectionState.ConnectedOnLocalNetwork && connState.ip.contains("192.168.4.")) ||
+                        webDavClient.getBaseUrl().contains("192.168.4.1")
+                    onHotspot && resolvedWifiManager.getInternetNetwork() == null
+                }
 
                 for (entry in remoteManifest.entries) {
                     val localDoc = entry.sourceUrl?.let { url ->
@@ -295,6 +307,10 @@ class SyncManager(
                                 remoteUrl.startsWith("https://", ignoreCase = true) &&
                                 onFetchRemoteArticle != null
                             ) {
+                                if (isHotspotOffline) {
+                                    Log.d(tag, "Skipping remote fetch for $remoteUrl during offline hotspot sync")
+                                    continue
+                                }
                                 val fetched = try {
                                     onFetchRemoteArticle.invoke(entry)
                                 } catch (e: Exception) {
