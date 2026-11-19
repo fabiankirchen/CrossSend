@@ -118,8 +118,9 @@ object DateUtils {
         val isSameDay = now.get(Calendar.YEAR) == target.get(Calendar.YEAR) &&
                 now.get(Calendar.DAY_OF_YEAR) == target.get(Calendar.DAY_OF_YEAR)
 
-        val isYesterday = now.get(Calendar.YEAR) == target.get(Calendar.YEAR) &&
-                now.get(Calendar.DAY_OF_YEAR) - target.get(Calendar.DAY_OF_YEAR) == 1
+        val yesterday = (now.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -1) }
+        val isYesterday = yesterday.get(Calendar.YEAR) == target.get(Calendar.YEAR) &&
+                yesterday.get(Calendar.DAY_OF_YEAR) == target.get(Calendar.DAY_OF_YEAR)
 
         val timeStr = SimpleDateFormat("HH:mm", locale).format(date)
         val todayStr = if (isGerman) "Heute" else "Today"

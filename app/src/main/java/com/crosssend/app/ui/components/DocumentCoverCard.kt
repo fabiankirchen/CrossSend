@@ -151,25 +151,26 @@ fun DocumentCoverCard(
             }
 
             // Layer 2 (Bottom Gradient Scrim for legibility)
+            val scrimSurface = MaterialTheme.colorScheme.surface
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
                             0.0f to Color.Transparent,
-                            0.38f to Color.Transparent,
-                            0.72f to Color.Black.copy(alpha = 0.62f),
-                            1.0f to Color.Black.copy(alpha = 0.86f)
+                            0.42f to Color.Transparent,
+                            0.70f to scrimSurface.copy(alpha = 0.78f),
+                            1.0f to scrimSurface.copy(alpha = 0.94f)
                         )
                     )
             )
 
-            // Layer 3 (Top Overlay Row — Alignment.TopCenter, padding(8.dp))
+            // Layer 3 (Top Overlay Row — Alignment.TopCenter)
             Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .padding(8.dp),
+                    .padding(start = 8.dp, top = 4.dp, end = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -265,21 +266,23 @@ fun DocumentCoverCard(
                         onCheckedChange = { onClick() }
                     )
                 } else {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.82f),
-                        modifier = Modifier.size(30.dp)
+                    IconButton(
+                        onClick = { onDelete(document) },
+                        modifier = Modifier.size(48.dp)
                     ) {
-                        IconButton(
-                            onClick = { onDelete(document) },
-                            modifier = Modifier.fillMaxSize()
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.82f),
+                            modifier = Modifier.size(30.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Delete,
-                                contentDescription = stringResource(R.string.card_action_delete),
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Delete,
+                                    contentDescription = stringResource(R.string.card_action_delete),
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
@@ -296,7 +299,7 @@ fun DocumentCoverCard(
                     text = document.title,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                     fontFamily = if (document.type == DocumentType.BOOK) FontFamily.Serif else FontFamily.Default
@@ -306,7 +309,7 @@ fun DocumentCoverCard(
                     Text(
                         text = document.author,
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.82f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )

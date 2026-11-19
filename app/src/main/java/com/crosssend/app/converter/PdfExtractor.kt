@@ -7,6 +7,7 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import androidx.core.graphics.createBitmap
 import com.crosssend.app.R
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -46,8 +47,11 @@ class PdfExtractor(private val context: Context) {
         if (!PDFBoxResourceLoader.isReady()) {
             PDFBoxResourceLoader.init(context)
         }
-        file.inputStream().use { stream ->
-            extractFromStream(stream, defaultTitle)
+        if (file.length() > MAX_PDF_STREAM_BYTES) {
+            throw IllegalArgumentException(context.getString(R.string.proc_error_file_too_large))
+        }
+        PDDocument.load(file).use { doc ->
+            extractFromDocument(doc, defaultTitle)
         }
     }
 
@@ -89,7 +93,7 @@ class PdfExtractor(private val context: Context) {
             val targetWidth = 480
             val targetHeight = ((origHeight.toFloat() / origWidth.toFloat()) * targetWidth).roundToInt().coerceIn(200, 1000)
 
-            val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+            val bitmap = createBitmap(targetWidth, targetHeight)
             val canvas = Canvas(bitmap)
             canvas.drawColor(android.graphics.Color.WHITE)
 
@@ -123,7 +127,7 @@ class PdfExtractor(private val context: Context) {
             val targetWidth = 480
             val targetHeight = ((origHeight.toFloat() / origWidth.toFloat()) * targetWidth).roundToInt().coerceIn(200, 1000)
 
-            val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+            val bitmap = createBitmap(targetWidth, targetHeight)
             val canvas = Canvas(bitmap)
             canvas.drawColor(android.graphics.Color.WHITE)
 
@@ -140,10 +144,25 @@ class PdfExtractor(private val context: Context) {
     }
 
     private fun extractFromStream(stream: InputStream, fallbackTitle: String): ExtractedPdf {
-        val document = PDDocument.load(stream)
-        document.use { doc ->
-            val pageCount = doc.numberOfPages
-            val info = doc.documentInformation
+        val tempFile = File.createTempFile("pdf_extract_", ".pdf", context.cacheDir)
+        try {
+            val copied = tempFile.outputStream().use { output ->
+                DocumentProcessor.copyBounded(stream, output, MAX_PDF_STREAM_BYTES)
+            }
+            if (copied < 0L) {
+                throw IllegalArgumentException(context.getString(R.string.proc_error_file_too_large))
+            }
+            return PDDocument.load(tempFile).use { doc ->
+                extractFromDocument(doc, fallbackTitle)
+            }
+        } finally {
+            try { tempFile.delete() } catch (_: Exception) {}
+        }
+    }
+
+    private fun extractFromDocument(doc: PDDocument, fallbackTitle: String): ExtractedPdf {
+        val pageCount = doc.numberOfPages
+        val info = doc.documentInformation
 
             val stripper = StructuredTextStripper().apply {
                 sortByPosition = true
@@ -228,7 +247,7 @@ class PdfExtractor(private val context: Context) {
 
             val readingTimeMinutes = maxOf(1, (totalWordCount / 210.0).roundToInt())
 
-            Log.i(tag, "Successfully extracted $totalWordCount words across $pageCount pages from '$detectedTitle'")
+            Log.i(tag, "Successfully extracted $totalWordCount words across $pageCount pages")
 
             return ExtractedPdf(
                 title = detectedTitle,
@@ -238,7 +257,10 @@ class PdfExtractor(private val context: Context) {
                 wordCount = totalWordCount,
                 readingTimeMinutes = readingTimeMinutes
             )
-        }
+    }
+
+    companion object {
+        private const val MAX_PDF_STREAM_BYTES = 150L * 1024L * 1024L
     }
 
     private data class RawPdfLine(

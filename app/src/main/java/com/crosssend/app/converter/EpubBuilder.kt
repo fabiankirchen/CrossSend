@@ -1,5 +1,6 @@
 package com.crosssend.app.converter
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
@@ -164,7 +165,7 @@ class EpubBuilder {
 
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("EpubBuilder", "Failed to build EPUB: ${e.message}", e)
             false
         }
     }

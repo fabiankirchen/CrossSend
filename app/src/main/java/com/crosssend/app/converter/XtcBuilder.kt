@@ -1,6 +1,7 @@
 package com.crosssend.app.converter
 
 import android.graphics.Bitmap
+import android.graphics.Rect
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -138,25 +139,126 @@ object XtcBuilder {
     }
 
     /**
-     * Converts a Bitmap of exact dimensions (width x height) into an XTH 2-bit page blob.
+     * Reusable per-document scratch buffers for [bitmapToXthPage] to avoid allocating
+     * multiple multi-megabyte pixel and luminance arrays on every rendered page.
      */
-    fun bitmapToXthPage(bitmap: Bitmap): ByteArray {
+    class XthScratchBuffers(initialPixelCount: Int = 0) {
+        internal var pixels = IntArray(initialPixelCount)
+        internal var luma = FloatArray(initialPixelCount)
+        internal var work = FloatArray(initialPixelCount)
+        internal var photoMask = BooleanArray(initialPixelCount)
+        internal var levels = ByteArray(initialPixelCount)
+
+        internal fun ensureCapacity(pixelCount: Int) {
+            if (pixels.size < pixelCount) pixels = IntArray(pixelCount)
+            if (luma.size < pixelCount) luma = FloatArray(pixelCount)
+            if (work.size < pixelCount) work = FloatArray(pixelCount)
+            if (photoMask.size < pixelCount) photoMask = BooleanArray(pixelCount)
+            if (levels.size != pixelCount) levels = ByteArray(pixelCount)
+        }
+    }
+
+    /**
+     * Converts a Bitmap of exact dimensions (width x height) into an XTH 2-bit page blob.
+     * Pixels inside [photoRects] use photo-preserving contrast and unrestricted 4-level Atkinson dithering,
+     * while surrounding text and UI surfaces keep crisp black glyph cores and dither-free gray boxes.
+     */
+    fun bitmapToXthPage(
+        bitmap: Bitmap,
+        photoRects: List<Rect> = emptyList(),
+        scratch: XthScratchBuffers? = null
+    ): ByteArray {
         val w = bitmap.width
         val h = bitmap.height
-        val pixels = IntArray(w * h)
+        val pixelCount = w * h
+        scratch?.ensureCapacity(pixelCount)
+        val pixels = scratch?.pixels ?: IntArray(pixelCount)
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-        val luma = FloatArray(w * h)
-        for (i in pixels.indices) {
+        val photoMask = if (photoRects.isNotEmpty()) {
+            val mask = scratch?.photoMask?.also { java.util.Arrays.fill(it, 0, pixelCount, false) }
+                ?: BooleanArray(pixelCount)
+            for (rect in photoRects) {
+                val left = rect.left.coerceIn(0, w)
+                val right = rect.right.coerceIn(0, w)
+                val top = rect.top.coerceIn(0, h)
+                val bottom = rect.bottom.coerceIn(0, h)
+                for (py in top until bottom) {
+                    val rowOffset = py * w
+                    for (px in left until right) {
+                        mask[rowOffset + px] = true
+                    }
+                }
+            }
+            mask
+        } else null
+
+        return pixelsToXthPage(
+            pixels = pixels,
+            width = w,
+            height = h,
+            photoMask = photoMask,
+            scratch = scratch
+        )
+    }
+
+    internal fun pixelsToXthPage(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        photoMask: BooleanArray? = null,
+        scratch: XthScratchBuffers? = null
+    ): ByteArray {
+        val levels = pixelsToLevels(
+            pixels = pixels,
+            width = width,
+            height = height,
+            photoMask = photoMask,
+            scratch = scratch
+        )
+        return encodeXthPage(width, height, levels)
+    }
+
+    internal fun pixelsToLevels(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        photoMask: BooleanArray? = null,
+        scratch: XthScratchBuffers? = null
+    ): ByteArray {
+        val pixelCount = width * height
+        require(pixels.size >= pixelCount) {
+            "Expected at least $pixelCount pixels, got ${pixels.size}"
+        }
+        scratch?.ensureCapacity(pixelCount)
+        val luma = scratch?.luma ?: FloatArray(pixelCount)
+        for (i in 0 until pixelCount) {
             val c = pixels[i]
             val r = (c shr 16) and 0xFF
             val g = (c shr 8) and 0xFF
             val b = c and 0xFF
             // ITU-R BT.601 luminance + gentle S-contrast curve for E-Ink web crispness
             val rawY = 0.299f * r + 0.587f * g + 0.114f * b
-            luma[i] = applyEInkContrast(rawY)
+            luma[i] = if (photoMask != null && photoMask[i]) {
+                applyPhotoEInkContrast(rawY)
+            } else {
+                applyEInkContrast(rawY)
+            }
         }
-        val levels = ditherAtkinson4Level(luma, w, h)
-        return encodeXthPage(w, h, levels)
+        return ditherAtkinson4Level(
+            luminance = luma,
+            width = width,
+            height = height,
+            photoMask = photoMask,
+            scratchWork = scratch?.work,
+            scratchOut = scratch?.levels
+        )
+    }
+
+    internal fun applyPhotoEInkContrast(y: Float): Float {
+        // Preserve full tonal gradient & shadow detail inside photos/illustrations for Atkinson dithering
+        if (y >= 242f) return 255f
+        if (y <= 28f) return 0f
+        return ((y - 128f) * 1.15f + 128f).coerceIn(0f, 255f)
     }
 
     internal fun applyEInkContrast(y: Float): Float {
@@ -173,9 +275,26 @@ object XtcBuilder {
      * Applies Atkinson error diffusion into 4 target levels:
      * 0 = White (255), 2 = Light Gray (170), 1 = Dark Gray (85), 3 = Black (0).
      */
-    fun ditherAtkinson4Level(luminance: FloatArray, width: Int, height: Int): ByteArray {
-        val work = luminance.copyOf()
-        val out = ByteArray(width * height)
+    fun ditherAtkinson4Level(
+        luminance: FloatArray,
+        width: Int,
+        height: Int,
+        photoMask: BooleanArray? = null,
+        scratchWork: FloatArray? = null,
+        scratchOut: ByteArray? = null
+    ): ByteArray {
+        val pixelCount = width * height
+        val work = if (scratchWork != null && scratchWork.size >= pixelCount) {
+            System.arraycopy(luminance, 0, scratchWork, 0, pixelCount)
+            scratchWork
+        } else {
+            luminance.copyOf(pixelCount)
+        }
+        val out = if (scratchOut != null && scratchOut.size == pixelCount) {
+            scratchOut
+        } else {
+            ByteArray(pixelCount)
+        }
 
         for (y in 0 until height) {
             val rowOffset = y * width
@@ -191,10 +310,13 @@ object XtcBuilder {
                 out[idx] = level
 
                 // Suppress error diffusion on antialiased glyph edges next to clean white/light-gray backgrounds
-                // so rounded strokes use E-Ink grays without bleeding dither dots into surrounding space.
-                val rawCenter = luminance[idx]
-                if (rawCenter in 69f..237f && isTextToBackgroundEdge(luminance, width, height, x, y)) {
-                    continue
+                // (never inside photos/images, where full Atkinson error diffusion produces smooth halftones).
+                val isPhotoPixel = photoMask != null && photoMask[idx]
+                if (!isPhotoPixel) {
+                    val rawCenter = luminance[idx]
+                    if (rawCenter in 69f..237f && isTextToBackgroundEdge(luminance, width, height, x, y)) {
+                        continue
+                    }
                 }
 
                 val err = (oldVal - newVal) / 8f
@@ -286,6 +408,52 @@ object XtcBuilder {
             }
         }
         return blob
+    }
+
+    /**
+     * Overwrites a horizontal strip (`[stripTopY, stripTopY + stripHeight)`) inside an already-encoded
+     * XTH page blob with new quantized levels (values 0..3), leaving all other rows untouched.
+     */
+    internal fun overlayStripLevelsOnXthPage(
+        xthBlob: ByteArray,
+        width: Int,
+        height: Int,
+        stripTopY: Int,
+        stripHeight: Int,
+        stripLevels: ByteArray
+    ) {
+        if (width <= 0 || height <= 0 || stripHeight <= 0) return
+        val colBytes = (height + 7) / 8
+        val planeSize = colBytes * width
+        if (xthBlob.size < XTH_HEADER_SIZE + planeSize * 2) return
+        if (stripLevels.size < width * stripHeight) return
+
+        val yStart = stripTopY.coerceAtLeast(0)
+        val yEnd = minOf(height, stripTopY + stripHeight)
+        if (yEnd <= yStart) return
+
+        val plane1Offset = XTH_HEADER_SIZE
+        val plane2Offset = XTH_HEADER_SIZE + planeSize
+
+        for (colIdx in 0 until width) {
+            val x = width - 1 - colIdx
+            val colByteBase = colIdx * colBytes
+            for (y in yStart until yEnd) {
+                val stripY = y - stripTopY
+                val level = stripLevels[stripY * width + x].toInt() and 0x03
+                val bit1 = (level shr 1) and 1
+                val bit2 = level and 1
+                val bytePos = colByteBase + (y shr 3)
+                val bitMask = 1 shl (7 - (y and 7))
+                val clearMask = bitMask.inv()
+
+                val p1 = (xthBlob[plane1Offset + bytePos].toInt() and 0xFF) and clearMask
+                xthBlob[plane1Offset + bytePos] = (if (bit1 != 0) p1 or bitMask else p1).toByte()
+
+                val p2 = (xthBlob[plane2Offset + bytePos].toInt() and 0xFF) and clearMask
+                xthBlob[plane2Offset + bytePos] = (if (bit2 != 0) p2 or bitMask else p2).toByte()
+            }
+        }
     }
 
     fun readXtchInfo(file: File): XtchInfo? {

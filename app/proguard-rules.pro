@@ -10,7 +10,7 @@
 -keep class com.crosssend.app.data.local.** { *; }
 -keep class com.crosssend.app.network.** { *; }
 -keep class com.crosssend.app.ui.screens.SdPluginInfo { *; }
--keep class com.crosssend.app.ui.screens.StorePluginItem { *; }
+-keep class com.crosssend.app.ui.screens.CatalogPlugin { *; }
 -keep class com.crosssend.app.ui.screens.ScopedPluginJsBridge { *; }
 -keep class com.crosssend.app.converter.EInkImageOptimizer$Companion$CrossPointHardwareProfile { *; }
 
@@ -38,3 +38,10 @@
 -dontwarn javax.annotation.**
 -dontwarn org.conscrypt.**
 -dontwarn org.openjsse.**
+
+# Strip verbose, debug, and info logs in release builds (preserve Log.w / Log.e)
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}

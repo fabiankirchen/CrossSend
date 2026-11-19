@@ -1,6 +1,7 @@
 package com.crosssend.app.converter
 
 import com.crosssend.app.data.local.DomainHostUtils
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -381,5 +382,139 @@ class XtcBuilderTest {
         val distinct = levels.toSet()
         assertTrue("Expected dithering across light gray and white in gradient, got $distinct",
             distinct.contains(XtcBuilder.LEVEL_LIGHT_GRAY) && distinct.contains(XtcBuilder.LEVEL_WHITE))
+    }
+
+    @Test
+    fun `applyPhotoEInkContrast preserves dark shadow tones for dithering while applyEInkContrast keeps text black`() {
+        // Dark photo shadow (luma 50) must NOT be crushed to 0f inside photos, unlike text (<= 68f -> 0f)
+        assertEquals(0f, XtcBuilder.applyEInkContrast(50f), 0.01f)
+        val photoShadow = XtcBuilder.applyPhotoEInkContrast(50f)
+        assertTrue("Expected photo shadow tonal detail > 30f, got $photoShadow", photoShadow in 30f..50f)
+
+        // With photoMask=true, even high-contrast edges inside a photo propagate dithering error normally
+        val w = 6
+        val h = 4
+        val luma = FloatArray(w * h) { 255f }
+        for (y in 0 until h) {
+            luma[y * w + 0] = 0f
+            luma[y * w + 1] = 200f
+        }
+        val photoMask = BooleanArray(w * h) { true }
+        val photoLevels = XtcBuilder.ditherAtkinson4Level(luma, w, h, photoMask)
+        assertTrue("Expected unrestricted Atkinson error diffusion inside photoMask", photoLevels.any { it == XtcBuilder.LEVEL_LIGHT_GRAY })
+    }
+
+    @Test
+    fun `XthScratchBuffers reused across multiple pages produces byte-for-byte identical XTH output`() {
+        val w = 24
+        val h = 16
+        val pixelCount = w * h
+
+        val page1Pixels = IntArray(pixelCount) { idx ->
+            val x = idx % w
+            val y = idx / w
+            val v = ((x * 11 + y * 13) % 256)
+            (0xFF shl 24) or (v shl 16) or (((v * 3) % 256) shl 8) or ((255 - v) % 256)
+        }
+        val page1PhotoMask = BooleanArray(pixelCount) { idx ->
+            val x = idx % w
+            val y = idx / w
+            x in 4 until 16 && y in 2 until 12
+        }
+
+        val page2Pixels = IntArray(pixelCount) { idx ->
+            val x = idx % w
+            val y = idx / w
+            when {
+                x == 6 && y in 2..12 -> 0xFF000000.toInt()
+                x == 7 && y in 2..12 -> 0xFF909090.toInt()
+                y in 0..3 -> 0xFFAAAAAA.toInt()
+                else -> 0xFFFFFFFF.toInt()
+            }
+        }
+
+        val smallW = 16
+        val smallH = 8
+        val page3Pixels = IntArray(smallW * smallH) { idx ->
+            val v = (idx * 7) % 256
+            (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+        }
+
+        val expected1 = XtcBuilder.pixelsToXthPage(page1Pixels, w, h, page1PhotoMask)
+        val expected2 = XtcBuilder.pixelsToXthPage(page2Pixels, w, h, photoMask = null)
+        val expected3 = XtcBuilder.pixelsToXthPage(page3Pixels, smallW, smallH, photoMask = null)
+
+        val scratch = XtcBuilder.XthScratchBuffers(pixelCount)
+        val actual1 = XtcBuilder.pixelsToXthPage(page1Pixels, w, h, page1PhotoMask, scratch)
+        val actual2 = XtcBuilder.pixelsToXthPage(page2Pixels, w, h, photoMask = null, scratch = scratch)
+        val actual3 = XtcBuilder.pixelsToXthPage(page3Pixels, smallW, smallH, photoMask = null, scratch = scratch)
+
+        assertArrayEquals(expected1, actual1)
+        assertArrayEquals(expected2, actual2)
+        assertArrayEquals(expected3, actual3)
+    }
+
+    @Test
+    fun `overlayStripLevelsOnXthPage stamps only bottom footer rows without disturbing content above`() {
+        val w = 16
+        val h = 32
+        val pageLevels = ByteArray(w * h) { idx ->
+            val y = idx / w
+            val x = idx % w
+            if (y < 20 && (x + y) % 2 == 0) XtcBuilder.LEVEL_BLACK else XtcBuilder.LEVEL_WHITE
+        }
+        val xthBlob = XtcBuilder.encodeXthPage(w, h, pageLevels)
+
+        // Stamp a 12-row footer strip at y = 20..31 with LIGHT_GRAY background and a DARK_GRAY center marker
+        val stripH = 12
+        val stripLevels = ByteArray(w * stripH) { XtcBuilder.LEVEL_LIGHT_GRAY }
+        for (y in 4 until 8) {
+            for (x in 5 until 11) {
+                stripLevels[y * w + x] = XtcBuilder.LEVEL_DARK_GRAY
+            }
+        }
+        XtcBuilder.overlayStripLevelsOnXthPage(
+            xthBlob = xthBlob,
+            width = w,
+            height = h,
+            stripTopY = 20,
+            stripHeight = stripH,
+            stripLevels = stripLevels
+        )
+
+        val outFile = tempFolder.newFile("footer_overlay.xtch")
+        assertTrue(
+            XtcBuilder.buildXtch(
+                outputFile = outFile,
+                title = "Footer Overlay Test",
+                author = "CrossSend",
+                pages = listOf(xthBlob),
+                width = w,
+                height = h
+            )
+        )
+
+        val decoded = XtcBuilder.decodePagePixels(outFile, 0)
+        assertNotNull(decoded)
+        val pixels = decoded!!.argbPixels
+        // Upper rows (y = 0..19) remain bit-for-bit intact
+        for (y in 0 until 20) {
+            for (x in 0 until w) {
+                val expectedColor = if ((x + y) % 2 == 0) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+                assertEquals("Upper content changed at ($x, $y)", expectedColor, pixels[y * w + x])
+            }
+        }
+        // Footer strip rows (y = 20..31) reflect the overlay levels
+        for (y in 20 until h) {
+            val sy = y - 20
+            for (x in 0 until w) {
+                val expectedColor = if (sy in 4 until 8 && x in 5 until 11) {
+                    0xFF555555.toInt()
+                } else {
+                    0xFFAAAAAA.toInt()
+                }
+                assertEquals("Footer pixel mismatch at ($x, $y)", expectedColor, pixels[y * w + x])
+            }
+        }
     }
 }

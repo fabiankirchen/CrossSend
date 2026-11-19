@@ -1,38 +1,24 @@
 package com.crosssend.app.ui.screens
 
-import android.widget.Toast
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.clearText
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,81 +27,79 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberSearchBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.crosssend.app.CrossSendApp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.crosssend.app.R
 import com.crosssend.app.data.local.DocumentEntity
-import com.crosssend.app.ui.components.DocumentCard
-import com.crosssend.app.ui.components.DocumentCoverCard
+import com.crosssend.app.ui.components.CrossSendSearchInputField
+import com.crosssend.app.ui.components.DocumentGridOrList
 import com.crosssend.app.ui.components.DocumentPreviewDialog
+import com.crosssend.app.ui.components.DocumentSelectionTopAppBar
+import com.crosssend.app.ui.viewmodel.ArchiveViewModel
+import com.crosssend.app.ui.viewmodel.resolve
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ArchiveScreen(
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: ArchiveViewModel = viewModel()
 ) {
-    val context = LocalContext.current
     val resources = LocalResources.current
-    val app = CrossSendApp.instance
-    val scope = rememberCoroutineScope()
 
-    val archivedDocuments by app.database.documentDao().getArchivedDocuments().collectAsState(initial = emptyList())
+    val documents by viewModel.archivedDocuments.collectAsStateWithLifecycle()
+    val totalArchivedCount by viewModel.totalArchivedCount.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val isSearchVisible by viewModel.isSearchVisible.collectAsStateWithLifecycle()
+    val isGridView by viewModel.isGridView.collectAsStateWithLifecycle()
+    val isSelectionMode by viewModel.isSelectionMode.collectAsStateWithLifecycle()
+    val selectedIds by viewModel.selectedIds.collectAsStateWithLifecycle()
 
-    var isGridView by remember { mutableStateOf(true) }
-    var isSearchVisible by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
+    val searchTextFieldState = rememberTextFieldState(initialText = searchQuery)
+    val searchBarState = rememberSearchBarState()
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    var isSelectionMode by remember { mutableStateOf(false) }
-    var selectedDocumentIds by remember { mutableStateOf(setOf<Long>()) }
-    var showBatchDeleteDialog by remember { mutableStateOf(false) }
-    var documentToDelete by remember { mutableStateOf<DocumentEntity?>(null) }
-    var documentForPreview by remember { mutableStateOf<DocumentEntity?>(null) }
+    LaunchedEffect(searchTextFieldState) {
+        snapshotFlow { searchTextFieldState.text.toString() }
+            .collect { query -> viewModel.onSearchQueryChange(query) }
+    }
 
-    val documents = remember(archivedDocuments, searchQuery) {
-        val q = searchQuery.trim()
-        if (q.isBlank()) {
-            archivedDocuments
-        } else {
-            archivedDocuments.filter { doc ->
-                doc.title.contains(q, ignoreCase = true) ||
-                    doc.fileName.contains(q, ignoreCase = true) ||
-                    (doc.sourceUrl?.contains(q, ignoreCase = true) == true)
-            }
+    LaunchedEffect(viewModel) {
+        viewModel.uiEvents.collect { uiMessage ->
+            snackbarHostState.showSnackbar(uiMessage.resolve(resources))
         }
     }
+
+    var showBatchDeleteDialog by remember { mutableStateOf(false) }
+    var showClearAllDialog by remember { mutableStateOf(false) }
+    var documentToDelete by remember { mutableStateOf<DocumentEntity?>(null) }
+    var documentForPreview by remember { mutableStateOf<DocumentEntity?>(null) }
 
     var backProgress by remember { mutableFloatStateOf(0f) }
     PredictiveBackHandler(enabled = isSelectionMode || isSearchVisible || searchQuery.isNotEmpty()) { progress ->
@@ -124,11 +108,10 @@ fun ArchiveScreen(
                 backProgress = event.progress
             }
             if (isSelectionMode) {
-                isSelectionMode = false
-                selectedDocumentIds = emptySet()
+                viewModel.clearSelection()
             } else {
-                searchQuery = ""
-                isSearchVisible = false
+                searchTextFieldState.clearText()
+                viewModel.closeSearch()
             }
         } catch (_: CancellationException) {
             backProgress = 0f
@@ -138,67 +121,27 @@ fun ArchiveScreen(
     }
 
     Scaffold(
+        modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             if (isSelectionMode) {
                 val allIds = documents.map { it.id }.toSet()
-                val allSelected = allIds.isNotEmpty() && selectedDocumentIds.containsAll(allIds)
+                val allSelected = allIds.isNotEmpty() && selectedIds.containsAll(allIds)
 
-                TopAppBar(
-                    navigationIcon = {
-                        IconButton(onClick = {
-                            isSelectionMode = false
-                            selectedDocumentIds = emptySet()
-                        }) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = stringResource(R.string.main_action_close_selection)
-                            )
-                        }
-                    },
-                    title = {
-                        Text(
-                            text = stringResource(R.string.main_selection_count, selectedDocumentIds.size),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                    },
-                    actions = {
-                        TextButton(
-                            onClick = {
-                                selectedDocumentIds = if (allSelected) emptySet() else allIds
-                            }
-                        ) {
-                            Text(
-                                if (allSelected) stringResource(R.string.main_selection_none)
-                                else stringResource(R.string.main_selection_all)
-                            )
-                        }
-                        IconButton(
-                            enabled = selectedDocumentIds.isNotEmpty(),
-                            onClick = { showBatchDeleteDialog = true }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Delete,
-                                contentDescription = stringResource(R.string.main_action_delete_selected),
-                                tint = if (selectedDocumentIds.isNotEmpty()) {
-                                    MaterialTheme.colorScheme.error
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-                                }
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                    )
+                DocumentSelectionTopAppBar(
+                    selectedCount = selectedIds.size,
+                    allSelected = allSelected,
+                    onCloseSelection = { viewModel.clearSelection() },
+                    onToggleSelectAll = { viewModel.toggleSelectAll() },
+                    onRequestBatchDelete = { showBatchDeleteDialog = true }
                 )
             } else {
                 TopAppBar(
                     navigationIcon = {
                         IconButton(onClick = {
                             if (isSearchVisible || searchQuery.isNotEmpty()) {
-                                searchQuery = ""
-                                isSearchVisible = false
+                                searchTextFieldState.clearText()
+                                viewModel.closeSearch()
                             } else {
                                 onNavigateBack()
                             }
@@ -218,7 +161,7 @@ fun ArchiveScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = pluralStringResource(R.plurals.archive_subtitle_count, archivedDocuments.size, archivedDocuments.size),
+                                text = pluralStringResource(R.plurals.archive_subtitle_count, totalArchivedCount, totalArchivedCount),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -230,11 +173,9 @@ fun ArchiveScreen(
                         IconButton(
                             onClick = {
                                 if (isSearchVisible) {
-                                    searchQuery = ""
-                                    isSearchVisible = false
-                                } else {
-                                    isSearchVisible = true
+                                    searchTextFieldState.clearText()
                                 }
+                                viewModel.toggleSearch()
                             }
                         ) {
                             Icon(
@@ -242,11 +183,17 @@ fun ArchiveScreen(
                                 contentDescription = stringResource(R.string.archive_cd_search)
                             )
                         }
+                        if (totalArchivedCount > 0) {
+                            IconButton(onClick = { showClearAllDialog = true }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.DeleteSweep,
+                                    contentDescription = stringResource(R.string.card_action_delete)
+                                )
+                            }
+                        }
                         FilledTonalIconButton(
-                            onClick = { isGridView = !isGridView },
-                            modifier = Modifier
-                                .padding(end = 8.dp)
-                                .size(38.dp)
+                            onClick = { viewModel.toggleGridView() },
+                            modifier = Modifier.padding(end = 4.dp)
                         ) {
                             Icon(
                                 imageVector = if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
@@ -255,7 +202,7 @@ fun ArchiveScreen(
                                 } else {
                                     stringResource(R.string.main_view_grid)
                                 },
-                                modifier = Modifier.size(19.dp)
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     },
@@ -277,81 +224,15 @@ fun ArchiveScreen(
                 }
         ) {
             AnimatedVisibility(visible = isSearchVisible && !isSelectionMode) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                CrossSendSearchInputField(
+                    textFieldState = searchTextFieldState,
+                    searchBarState = searchBarState,
+                    placeholderText = stringResource(R.string.archive_search_placeholder),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                        .height(46.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 14.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = stringResource(R.string.main_search_hint),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 8.dp),
-                            contentAlignment = Alignment.CenterStart
-                        ) {
-                            val focusManager = LocalFocusManager.current
-                            val imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current)
-                            var wasImeVisible by remember { mutableStateOf(false) }
-                            LaunchedEffect(imeBottomPx) {
-                                val isVisible = imeBottomPx > 0
-                                if (wasImeVisible && !isVisible) {
-                                    focusManager.clearFocus(force = true)
-                                }
-                                wasImeVisible = isVisible
-                            }
-                            if (searchQuery.isEmpty()) {
-                                Text(
-                                    text = stringResource(R.string.archive_search_placeholder),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            BasicTextField(
-                                value = searchQuery,
-                                onValueChange = { searchQuery = it },
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                    color = MaterialTheme.colorScheme.onSurface
-                                ),
-                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                keyboardActions = KeyboardActions(
-                                    onSearch = { focusManager.clearFocus(force = true) },
-                                    onDone = { focusManager.clearFocus(force = true) }
-                                ),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(
-                                onClick = { searchQuery = "" },
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = stringResource(R.string.main_clear_search),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-                }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    onClearSearch = { viewModel.onSearchQueryChange("") }
+                )
             }
 
             Box(
@@ -397,71 +278,26 @@ fun ArchiveScreen(
                             )
                         }
                     }
-                } else if (isGridView) {
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 155.dp),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
-                    ) {
-                        items(documents, key = { it.id }) { doc ->
-                            val isSelected = selectedDocumentIds.contains(doc.id)
-                            DocumentCoverCard(
-                                document = doc,
-                                isSelectionMode = isSelectionMode,
-                                isSelected = isSelected,
-                                onClick = {
-                                    if (isSelectionMode) {
-                                        selectedDocumentIds = if (isSelected) {
-                                            selectedDocumentIds - doc.id
-                                        } else {
-                                            selectedDocumentIds + doc.id
-                                        }
-                                    } else {
-                                        documentForPreview = doc
-                                    }
-                                },
-                                onLongClick = {
-                                    if (!isSelectionMode) {
-                                        isSelectionMode = true
-                                        selectedDocumentIds = setOf(doc.id)
-                                    }
-                                },
-                                onDelete = { documentToDelete = it }
-                            )
-                        }
-                    }
                 } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 4.dp)
-                    ) {
-                        items(documents, key = { it.id }) { doc ->
-                            val isSelected = selectedDocumentIds.contains(doc.id)
-                            DocumentCard(
-                                document = doc,
-                                isSelectionMode = isSelectionMode,
-                                isSelected = isSelected,
-                                onClick = {
-                                    if (isSelectionMode) {
-                                        selectedDocumentIds = if (isSelected) {
-                                            selectedDocumentIds - doc.id
-                                        } else {
-                                            selectedDocumentIds + doc.id
-                                        }
-                                    } else {
-                                        documentForPreview = doc
-                                    }
-                                },
-                                onLongClick = {
-                                    if (!isSelectionMode) {
-                                        isSelectionMode = true
-                                        selectedDocumentIds = setOf(doc.id)
-                                    }
-                                },
-                                onDelete = { documentToDelete = it }
-                            )
-                        }
-                    }
+                    DocumentGridOrList(
+                        documents = documents,
+                        isGridView = isGridView,
+                        isSelectionMode = isSelectionMode,
+                        selectedDocumentIds = selectedIds,
+                        onDocumentClick = { doc ->
+                            if (isSelectionMode) {
+                                viewModel.toggleSelection(doc.id)
+                            } else {
+                                documentForPreview = doc
+                            }
+                        },
+                        onDocumentLongClick = { doc ->
+                            if (!isSelectionMode) {
+                                viewModel.enterSelectionMode(doc.id)
+                            }
+                        },
+                        onDeleteDocument = { documentToDelete = it }
+                    )
                 }
             }
         }
@@ -476,55 +312,25 @@ fun ArchiveScreen(
                 documentToDelete = toDelete
             },
             onResendFromArchive = { archivedDoc ->
-                archivedDoc.sourceUrl?.let { url ->
-                    app.applicationScope.launch {
-                        if (archivedDoc.renderMode == com.crosssend.app.data.model.RenderMode.ORIGINAL_LAYOUT) {
-                            app.documentProcessor.processWebUrlOriginalLayout(
-                                url = url,
-                                fallbackTitle = archivedDoc.title,
-                                author = archivedDoc.author,
-                                existingDoc = archivedDoc
-                            )
-                        } else {
-                            app.documentProcessor.processWebUrl(url, archivedDoc.title)
-                        }
-                    }
-                    Toast.makeText(
-                        context,
-                        resources.getString(R.string.main_toast_resending_article),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
+                viewModel.resendDocument(archivedDoc)
             }
         )
     }
 
-    if (showBatchDeleteDialog && selectedDocumentIds.isNotEmpty()) {
+    if (showBatchDeleteDialog && selectedIds.isNotEmpty()) {
         AlertDialog(
             onDismissRequest = { showBatchDeleteDialog = false },
             title = {
-                Text(pluralStringResource(R.plurals.main_dialog_batch_delete_title_archive, selectedDocumentIds.size, selectedDocumentIds.size))
+                Text(pluralStringResource(R.plurals.main_dialog_batch_delete_title_archive, selectedIds.size, selectedIds.size))
             },
             text = {
-                Text(pluralStringResource(R.plurals.main_dialog_batch_delete_msg_archive, selectedDocumentIds.size, selectedDocumentIds.size))
+                Text(pluralStringResource(R.plurals.main_dialog_batch_delete_msg_archive, selectedIds.size, selectedIds.size))
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val idsToDelete = selectedDocumentIds.toList()
                         showBatchDeleteDialog = false
-                        isSelectionMode = false
-                        selectedDocumentIds = emptySet()
-
-                        scope.launch {
-                            withContext(Dispatchers.IO) {
-                                for (id in idsToDelete) {
-                                    val doc = app.database.documentDao().getById(id) ?: continue
-                                    app.database.documentDao().delete(doc)
-                                    File(context.filesDir, "library/covers/${doc.fileName}.jpg").delete()
-                                }
-                            }
-                        }
+                        viewModel.deleteSelected()
                     }
                 ) {
                     Text(stringResource(R.string.main_action_delete), color = MaterialTheme.colorScheme.error)
@@ -532,6 +338,33 @@ fun ArchiveScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showBatchDeleteDialog = false }) {
+                    Text(stringResource(R.string.main_action_cancel))
+                }
+            }
+        )
+    }
+
+    if (showClearAllDialog && totalArchivedCount > 0) {
+        AlertDialog(
+            onDismissRequest = { showClearAllDialog = false },
+            title = {
+                Text(pluralStringResource(R.plurals.main_dialog_batch_delete_title_archive, totalArchivedCount, totalArchivedCount))
+            },
+            text = {
+                Text(pluralStringResource(R.plurals.main_dialog_batch_delete_msg_archive, totalArchivedCount, totalArchivedCount))
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearAllDialog = false
+                        viewModel.clearAllArchive()
+                    }
+                ) {
+                    Text(stringResource(R.string.main_action_delete), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearAllDialog = false }) {
                     Text(stringResource(R.string.main_action_cancel))
                 }
             }
@@ -552,12 +385,7 @@ fun ArchiveScreen(
                     onClick = {
                         val toDelete = doc
                         documentToDelete = null
-                        scope.launch {
-                            withContext(Dispatchers.IO) {
-                                app.database.documentDao().delete(toDelete)
-                                File(context.filesDir, "library/covers/${toDelete.fileName}.jpg").delete()
-                            }
-                        }
+                        viewModel.deleteDocument(toDelete)
                     }
                 ) {
                     Text(stringResource(R.string.main_action_delete), color = MaterialTheme.colorScheme.error)

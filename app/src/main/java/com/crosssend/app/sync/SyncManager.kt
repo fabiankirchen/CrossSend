@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 
 class SyncManager(
     private val context: Context,
@@ -109,7 +110,7 @@ class SyncManager(
             _syncStatusText.value = context.getString(R.string.sync_status_uploading_files)
 
             // Ensure any ACSM files are routed to "/" (root) for Protected Content plugin
-            val allAcsm = documentDao.getAllDocuments().filter { it.fileName.endsWith(".acsm", true) && it.remotePath != "/${it.fileName}" }
+            val allAcsm = documentDao.getAcsmDocumentsNeedingRootPath()
             for (acsm in allAcsm) {
                 documentDao.update(acsm.copy(remotePath = "/${acsm.fileName}", syncStatus = SyncStatus.PENDING_UPLOAD))
             }
@@ -128,10 +129,24 @@ class SyncManager(
                 _syncStatusText.value = context.getString(R.string.sync_status_sending_file, doc.fileName)
                 _uploadProgressByDocId.value = _uploadProgressByDocId.value + (doc.id to 0f)
                 var lastReportedProgress = 0f
+                val progressLock = Any()
                 val success = webDavClient.uploadFile(localFile, targetPath) { progress ->
                     val clamped = progress.coerceIn(0f, 1f)
-                    if (clamped - lastReportedProgress >= 0.02f || clamped >= 0.99f) {
-                        lastReportedProgress = clamped
+                    val shouldEmit = synchronized(progressLock) {
+                        when {
+                            // Reset progress tracking if upload fell back to another transport (e.g. WS -> HTTP/WebDAV)
+                            clamped < lastReportedProgress - 0.05f -> {
+                                lastReportedProgress = clamped
+                                true
+                            }
+                            clamped - lastReportedProgress >= 0.02f || (clamped >= 0.99f && clamped > lastReportedProgress) -> {
+                                lastReportedProgress = clamped
+                                true
+                            }
+                            else -> false
+                        }
+                    }
+                    if (shouldEmit) {
                         _uploadProgressByDocId.value = _uploadProgressByDocId.value + (doc.id to clamped)
                     }
                 }
@@ -195,6 +210,7 @@ class SyncManager(
             "/crosssend/articles/read"
         )
         var cleanedCount = 0
+        var docsByLowerFileName: Map<String, DocumentEntity>? = null
 
         for (folder in readFolders) {
             val remoteItems = webDavClient.listDirectory(folder)
@@ -203,12 +219,16 @@ class SyncManager(
             for (item in remoteItems) {
                 if (item.isDirectory) continue
 
+                val docsMap = docsByLowerFileName ?: documentDao.getAllDocuments()
+                    .groupBy { it.fileName.lowercase(Locale.ROOT) }
+                    .mapValues { (_, list) -> list.first() }
+                    .also { docsByLowerFileName = it }
+
                 // Check if this file belongs to an article from CrossSend
-                val doc = documentDao.findByFileName(item.name)
-                    ?: documentDao.getAllDocuments().firstOrNull { it.fileName.equals(item.name, ignoreCase = true) }
+                val doc = docsMap[item.name.lowercase(Locale.ROOT)]
 
                 if (doc != null) {
-                    Log.i(tag, "Read article detected on CrossPoint in $folder: ${item.name}. Cleaning up remotely and archiving locally.")
+                    Log.i(tag, "Read article detected on CrossPoint in $folder. Cleaning up remotely and archiving locally.")
 
                     val excerpt = if (!doc.excerpt.isNullOrBlank()) {
                         doc.excerpt
@@ -222,16 +242,19 @@ class SyncManager(
 
                     // 1. Delete remote file from the read folder on CrossPoint
                     val remoteDeleted = webDavClient.deleteFile("${folder.trimEnd('/')}/${item.name}")
+                    if (remoteDeleted) {
+                        // 2. Delete local file from phone library, freeing 100% of the file space
+                        val localFile = File(doc.localPath)
+                        if (localFile.exists()) {
+                            localFile.delete()
+                        }
 
-                    // 2. Delete local file from phone library, freeing 100% of the file space
-                    val localFile = File(doc.localPath)
-                    if (localFile.exists()) {
-                        localFile.delete()
+                        // 3. Instead of permanently deleting, preserve item in 90-day archive
+                        documentDao.markArchived(doc.id, System.currentTimeMillis(), excerpt)
+                        cleanedCount++
+                    } else {
+                        Log.w(tag, "Failed to delete remote read article in $folder; skipping local archive.")
                     }
-
-                    // 3. Instead of permanently deleting, preserve item in 90-day archive
-                    documentDao.markArchived(doc.id, System.currentTimeMillis(), excerpt)
-                    cleanedCount++
                 }
             }
         }

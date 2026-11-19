@@ -19,12 +19,14 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalResources
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.crosssend.app.converter.DocumentProcessor
 import com.crosssend.app.converter.EInkImageOptimizer
 import com.crosssend.app.data.model.RenderMode
 import com.crosssend.app.ui.components.ArticleWebViewDialog
@@ -76,8 +78,9 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             CrossSendTheme {
+                val resources = LocalResources.current
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    val pendingWebReq by app.pendingWebViewRequest.collectAsState()
+                    val pendingWebReq by app.pendingWebViewRequest.collectAsStateWithLifecycle()
 
                     CrossSendNavHost()
 
@@ -92,42 +95,46 @@ class MainActivity : ComponentActivity() {
                             onImportArticle = { html, finalUrl ->
                                 app.pendingWebViewRequest.value = null
                                 val isXtchRerender = req.rerenderOriginalLayoutDocId != null
-                                val toastText = getString(
+                                val toastText = resources.getString(
                                     if (isXtchRerender) R.string.proc_progress_rendering_layout
                                     else R.string.webview_processing_toast
                                 )
                                 android.widget.Toast.makeText(this@MainActivity, toastText, android.widget.Toast.LENGTH_SHORT).show()
                                 app.applicationScope.launch {
+                                    val normalizedFinalUrl = normalizeHttpToHttps(finalUrl)
                                     val targetDocId = req.rerenderOriginalLayoutDocId
                                     if (targetDocId != null) {
                                         app.rerenderingDocId.value = targetDocId
                                         try {
                                             val existing = app.database.documentDao().getById(targetDocId)
-                                            val targetUrl = if (EInkImageOptimizer.isSafeExternalImageUrl(finalUrl)) {
-                                                finalUrl
+                                            val fallbackUrl = normalizeHttpToHttps(existing?.sourceUrl ?: req.url)
+                                            val targetUrl = if (EInkImageOptimizer.isSafeHttpsExternalUrl(normalizedFinalUrl)) {
+                                                normalizedFinalUrl
                                             } else {
-                                                existing?.sourceUrl ?: req.url
+                                                fallbackUrl
                                             }
-                                            app.documentProcessor.processWebUrlOriginalLayout(
-                                                url = targetUrl,
-                                                fallbackTitle = existing?.title ?: req.title,
-                                                author = existing?.author,
-                                                existingDoc = existing
-                                            )
+                                            if (EInkImageOptimizer.isSafeHttpsExternalUrl(targetUrl)) {
+                                                app.documentProcessor.processWebUrlOriginalLayout(
+                                                    url = targetUrl,
+                                                    fallbackTitle = existing?.title ?: req.title,
+                                                    author = existing?.author,
+                                                    existingDoc = existing
+                                                )
+                                            }
                                         } finally {
                                             if (app.rerenderingDocId.value == targetDocId) {
                                                 app.rerenderingDocId.value = null
                                             }
                                         }
-                                    } else if (EInkImageOptimizer.isSafeExternalImageUrl(finalUrl) &&
-                                        app.documentProcessor.resolveRenderModeForUrl(finalUrl) == RenderMode.ORIGINAL_LAYOUT
+                                    } else if (EInkImageOptimizer.isSafeHttpsExternalUrl(normalizedFinalUrl) &&
+                                        app.documentProcessor.resolveRenderModeForUrl(normalizedFinalUrl) == RenderMode.ORIGINAL_LAYOUT
                                     ) {
                                         app.documentProcessor.processWebUrlOriginalLayout(
-                                            url = finalUrl,
+                                            url = normalizedFinalUrl,
                                             fallbackTitle = req.title
                                         )
                                     } else {
-                                        app.documentProcessor.processHtmlContent(html, baseUrl = finalUrl, subject = req.title)
+                                        app.documentProcessor.processHtmlContent(html, baseUrl = normalizedFinalUrl, subject = req.title)
                                     }
                                 }
                             }
@@ -151,14 +158,24 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: android.content.Intent?) {
         val token = intent?.getStringExtra(EXTRA_INTERNAL_TOKEN)
-        val webUrl = intent?.getStringExtra(EXTRA_WEBVIEW_URL)
-        if (token == CrossSendApp.INTERNAL_NOTIFICATION_TOKEN && !webUrl.isNullOrBlank() &&
-            com.crosssend.app.converter.EInkImageOptimizer.isSafeExternalImageUrl(webUrl.trim())
-        ) {
-            (application as? CrossSendApp)?.pendingWebViewRequest?.value = WebArticleLoginRequest(
-                url = webUrl.trim(),
-                title = intent.getStringExtra(EXTRA_WEBVIEW_TITLE)
-            )
+        val rawWebUrl = intent?.getStringExtra(EXTRA_WEBVIEW_URL)?.trim()
+        if (token == CrossSendApp.INTERNAL_NOTIFICATION_TOKEN && !rawWebUrl.isNullOrBlank()) {
+            val normalizedWebUrl = normalizeHttpToHttps(rawWebUrl)
+            if (EInkImageOptimizer.isSafeHttpsExternalUrl(normalizedWebUrl)) {
+                (application as? CrossSendApp)?.pendingWebViewRequest?.value = WebArticleLoginRequest(
+                    url = normalizedWebUrl,
+                    title = intent.getStringExtra(EXTRA_WEBVIEW_TITLE)
+                )
+            }
+        }
+    }
+
+    private fun normalizeHttpToHttps(rawUrl: String): String {
+        val trimmed = rawUrl.trim()
+        return if (trimmed.startsWith("http://", ignoreCase = true)) {
+            DocumentProcessor.normalizeExternalHttpsUrl(trimmed)
+        } else {
+            trimmed
         }
     }
 

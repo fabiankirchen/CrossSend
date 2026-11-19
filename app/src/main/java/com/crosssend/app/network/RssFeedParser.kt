@@ -1,14 +1,14 @@
 package com.crosssend.app.network
 
 import android.util.Log
+import com.crosssend.app.converter.EInkImageOptimizer
+import com.crosssend.app.util.DateUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.Jsoup
-import com.crosssend.app.util.DateUtils
 import java.util.Date
-import java.util.concurrent.TimeUnit
+import java.util.Locale
 import kotlin.math.roundToInt
 
 data class RssFeed(
@@ -34,28 +34,9 @@ data class RssItem(
 
 class RssFeedParser {
     private val tag = "RssFeedParser"
-    private val client: OkHttpClient
-        get() = try {
-            com.crosssend.app.CrossSendApp.instance.wifiManager.getInternetOkHttpClientBuilder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .addInterceptor(com.crosssend.app.converter.EInkImageOptimizer.ssrfSafeInterceptor)
-                .addNetworkInterceptor(com.crosssend.app.converter.EInkImageOptimizer.ssrfSafeInterceptor)
-                .build()
-        } catch (_: Exception) {
-            OkHttpClient.Builder()
-                .dns(com.crosssend.app.converter.EInkImageOptimizer.ssrfSafeDns)
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .addInterceptor(com.crosssend.app.converter.EInkImageOptimizer.httpsOnlyInterceptor)
-                .addNetworkInterceptor(com.crosssend.app.converter.EInkImageOptimizer.httpsOnlyInterceptor)
-                .addInterceptor(com.crosssend.app.converter.EInkImageOptimizer.ssrfSafeInterceptor)
-                .addNetworkInterceptor(com.crosssend.app.converter.EInkImageOptimizer.ssrfSafeInterceptor)
-                .build()
-        }
 
     suspend fun fetchFeed(feedUrl: String): RssFeed = withContext(Dispatchers.IO) {
-        require(com.crosssend.app.converter.EInkImageOptimizer.isSafeExternalImageUrl(feedUrl)) {
+        require(EInkImageOptimizer.isSafeHttpsExternalUrl(feedUrl)) {
             try {
                 com.crosssend.app.CrossSendApp.instance.getString(com.crosssend.app.R.string.feeds_error_unsafe_url)
             } catch (_: Throwable) {
@@ -67,6 +48,7 @@ class RssFeedParser {
             .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 8) CrossSend/1.0")
             .build()
 
+        val client = EInkImageOptimizer.getSafeInternetClient(connectTimeoutSeconds = 15, readTimeoutSeconds = 20)
         val xml = client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 val msg = try {
@@ -84,27 +66,33 @@ class RssFeedParser {
                     "Feed response is empty."
                 }
             )
-            com.crosssend.app.converter.EInkImageOptimizer.readBoundedString(responseBody, 10L * 1024 * 1024)
+            EInkImageOptimizer.readBoundedString(responseBody, 10L * 1024 * 1024)
         }
         parseFeedXml(xml, feedUrl)
     }
 
     private fun sanitizeFeedDocument(doc: org.jsoup.nodes.Document): String {
         doc.select(
-            "img[src^=data:], script, style, iframe, form, button, input, nav, footer, aside, " +
+            "script, style, iframe, form, button, input, nav, footer, aside, " +
                 "noscript, object, embed, svg, math, video, audio, source, track, canvas, map, area, applet, base, meta, link"
         ).remove()
+        for (img in doc.select("img")) {
+            if (!EInkImageOptimizer.isSafeHtmlUri(img.attr("src"), allowRelative = false)) {
+                img.remove()
+            }
+        }
         val uriAttributes = setOf("href", "src", "xlink:href", "formaction", "srcdoc", "action", "data")
         for (el in doc.body().getAllElements()) {
             if (el == doc.body()) continue
             val attrsToRemove = mutableListOf<String>()
             for (attr in el.attributes()) {
-                val key = attr.key.lowercase()
+                val key = attr.key.lowercase(Locale.ROOT)
                 if (key == "style" || key.startsWith("on")) {
                     attrsToRemove.add(attr.key)
                 } else if (key in uriAttributes) {
-                    val v = attr.value.replace(Regex("[\\u0000-\\u0020]+"), "").lowercase()
-                    if (v.startsWith("javascript:") || v.startsWith("vbscript:") || v.startsWith("data:")) {
+                    val isSafe = key != "srcdoc" &&
+                        EInkImageOptimizer.isSafeHtmlUri(attr.value, allowRelative = true)
+                    if (!isSafe) {
                         attrsToRemove.add(attr.key)
                     }
                 }

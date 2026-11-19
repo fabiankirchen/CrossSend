@@ -68,6 +68,11 @@
     <string name="feeds_error_unsafe_url">Ungültige oder interne Feed-URL blockiert.</string>
     <string name="feeds_error_http">Feed konnte nicht abgerufen werden: HTTP %1$d</string>
     <string name="feeds_error_empty">Feed-Antwort ist leer.</string>
+    <string name="feed_preview_excerpt_fallback">Keine Vorschau-Zusammenfassung für diesen Artikel verfügbar.</string>
+    <string name="feed_preview_open_original">Original öffnen</string>
+    <string name="feed_preview_send_reader">An CrossPoint senden</string>
+    <string name="feed_preview_already_saved">Bereits in Bibliothek</string>
+    <string name="feed_clear_search">Suche leeren</string>
 
     <!-- Document Processor & Notifications -->
     <string name="proc_error_internal_access_denied">Zugriff auf interne App-Dateien verweigert.</string>

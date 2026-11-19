@@ -151,6 +151,8 @@
     <string name="settings_xtch_zoom_label">Web-Schriftgröße: %1$d%%</string>
     <string name="settings_xtch_lighten_dark">Dunkle Websites für E-Ink aufhellen</string>
     <string name="settings_xtch_lighten_dark_desc">Wandelt dunkle Website-Designs in helles Papier um</string>
+    <string name="settings_xtch_page_numbers">Seitenzahlen in Fußzeile anzeigen</string>
+    <string name="settings_xtch_page_numbers_desc">Zeigt unten auf jeder Seite dezent „1 / 12“ an</string>
     <string name="settings_section_domains">Gespeicherte Website-Regeln</string>
     <string name="settings_domains_empty">Noch keine Website-Regeln gespeichert. Schalte in einer Artikelvorschau um, um den Modus für diese Domain zu merken.</string>
     <string name="settings_domain_reset">Regel entfernen</string>
@@ -183,4 +185,19 @@
     <string name="dev_category_device">Gerät</string>
     <string name="dev_unit_minutes">\u0020Min.</string>
     <string name="dev_plugin_start_error">Fehler beim Starten des Plugins:\u0020</string>
+    <string name="dev_plugin_default_description">CrossPoint SD-Plugin</string>
+    <string name="dev_plugin_mount">Mount: %1$s</string>
+    <string name="dev_plugin_protected_content_desc">Fulfill geschützte Bücher (Adobe / ByteBooks) direkt über das Smartphone ohne Reader-WLAN.</string>
+    <string name="dev_config_json_file_label">config.json</string>
+    <string name="dev_settings_cat_cloud">KOReader &amp; Cloud-Sync</string>
+    <string name="dev_settings_cat_reader">Leseerlebnis &amp; Typografie</string>
+    <string name="dev_settings_cat_display">Anzeige &amp; Bildschirmschoner</string>
+    <string name="dev_settings_cat_controls">Tasten &amp; Gestensteuerung</string>
+    <string name="dev_settings_cat_system">System &amp; Energie</string>
+    <string name="dev_settings_cat_other">Weitere Optionen</string>
+    <string name="device_show_password">Passwort anzeigen</string>
+    <string name="device_hide_password">Passwort verbergen</string>
+    <string name="device_hardware_profile_saved">Hardware-Profil auf %1$s gesetzt</string>
+    <string name="device_quick_address_saved">Reader-Adresse aktualisiert: %1$s</string>
+    <string name="device_error_invalid_address">Ungültige Reader-Adresse. Nur lokale LAN-IPs oder .local-Hosts erlaubt.</string>
 </resources>

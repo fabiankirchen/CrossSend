@@ -22,8 +22,8 @@ android {
         applicationId = "com.crosssend.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 5
-        versionName = "1.1.0-beta.2"
+        versionCode = 6
+        versionName = "1.1.0-beta.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -110,6 +110,7 @@ dependencies {
     // AndroidX & Core
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.activity:activity-compose:1.9.3")
 

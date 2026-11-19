@@ -51,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -148,7 +149,7 @@ fun DocumentCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val sizeFormatted = formatFileSize(document.fileSizeBytes)
+                    val sizeFormatted = formatFileSize(document.fileSizeBytes, LocalLocale.current.platformLocale)
                     Text(
                         text = sizeFormatted,
                         style = MaterialTheme.typography.labelSmall,
@@ -187,7 +188,7 @@ fun DocumentCard(
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Text(
                                     text = if (isUploadingNow) {
-                                        stringResource(R.string.card_status_uploading, (uploadProgress!! * 100).toInt().coerceIn(0, 100))
+                                        stringResource(R.string.card_status_uploading, ((uploadProgress ?: 0f) * 100).toInt().coerceIn(0, 100))
                                     } else {
                                         stringResource(R.string.card_status_pending)
                                     },
@@ -303,11 +304,10 @@ internal fun CardUploadProgressBar(
     }
 }
 
-private fun formatFileSize(bytes: Long): String {
+private fun formatFileSize(bytes: Long, locale: Locale): String {
     if (bytes <= 0) return "0 B"
     val kb = bytes / 1024.0
     val mb = kb / 1024.0
-    val locale = Locale.getDefault()
     return if (mb >= 1.0) {
         String.format(locale, "%.1f MB", mb)
     } else {

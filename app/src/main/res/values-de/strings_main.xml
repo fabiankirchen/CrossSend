@@ -46,6 +46,7 @@
     <string name="main_action_cancel">Abbrechen</string>
     <string name="main_dialog_add_url_title">Web-Artikel hinzufügen</string>
     <string name="main_dialog_add_url_desc">Gib die URL des Artikels ein. Er wird für E-Ink als EPUB oder Originallayout (XTCH) aufbereitet:</string>
+    <string name="main_label_url_hint">https://…</string>
     <string name="main_button_in_browser">Im Browser</string>
     <string name="main_button_add">Hinzufügen</string>
     <string name="main_dialog_add_note_title">Notiz / Text einfügen</string>
@@ -190,4 +191,26 @@
     <string name="sync_status_syncing_manifest">Synchronisiere Bibliotheks-Manifest…</string>
     <string name="sync_status_completed">Synchronisation abgeschlossen</string>
     <string name="sync_error_unknown">Unbekannter Fehler bei der Synchronisation.</string>
+
+    <!-- Sortierung & Validierung -->
+    <string name="error_invalid_local_device_url">Ungültige lokale Geräteadresse. Bitte eine lokale IP (z. B. 192.168.1.50) oder einen .local-Host eingeben.</string>
+    <string name="main_sort_order">Sortierung</string>
+    <string name="main_sort_newest">Neueste zuerst</string>
+    <string name="main_sort_oldest">Älteste zuerst</string>
+    <string name="main_sort_title">Titel (A–Z)</string>
+
+    <!-- Browser-Sitzungen, Diagnose & App-Version -->
+    <string name="settings_section_browser_diagnostics">Browser-Sitzungen &amp; Diagnose</string>
+    <string name="settings_clear_cookies">Website-Logins &amp; Cookies löschen</string>
+    <string name="settings_clear_cookies_desc">Meldet dich von im internen Browser gespeicherten Paywall-/Login-Seiten ab.</string>
+    <string name="settings_cookies_cleared">Browser-Cookies gelöscht</string>
+    <string name="settings_debug_dumps_title">Konvertierungs-Debug-Dumps erfassen</string>
+    <string name="settings_debug_dumps_desc">Speichert temporäre HTML-/XTCH-Logs zur Fehlersuche im App-Cache.</string>
+    <string name="settings_clear_debug_dumps">Debug-Dumps löschen</string>
+    <string name="settings_debug_dumps_cleared">Debug-Dumps gelöscht</string>
+    <string name="settings_app_version_label">App-Version</string>
+    <string name="settings_xtch_color_scheme">Webseiten-Farbschema</string>
+    <string name="settings_xtch_color_scheme_desc">Legt fest, ob Webseiten im Hell- oder Dunkelmodus gerendert werden.</string>
+    <string name="settings_xtch_color_scheme_light">Hell</string>
+    <string name="settings_xtch_color_scheme_dark">Dunkel</string>
 </resources>

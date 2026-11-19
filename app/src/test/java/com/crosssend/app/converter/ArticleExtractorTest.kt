@@ -528,5 +528,94 @@ class ArticleExtractorTest {
         assertTrue(!item2Html.contains("formaction"))
         assertTrue(!item2Html.contains("javascript:"))
     }
+
+    @Test
+    fun testSanitizersEnforceUriSchemeAllowlistInArticlesAndFeeds() = runBlocking {
+        val extractor = ArticleExtractor()
+        val articleHtml = """
+            <!DOCTYPE html>
+            <html>
+            <body>
+                <article>
+                    <h1>URI Allowlist Test</h1>
+                    <p>First real paragraph with enough narrative words so extraction keeps the main article body intact.</p>
+                    <p>
+                        Allowed links:
+                        <a href="https://example.com/full">https link</a>,
+                        <a href="http://example.com/plain">http link</a>,
+                        <a href="#section-1">anchor link</a>,
+                        <a href="/articles/next">relative link</a>.
+                    </p>
+                    <p>
+                        Blocked links:
+                        <a href="file:///etc/passwd">file link</a>,
+                        <a href="intent://scan/#Intent;scheme=zxing;end">intent link</a>,
+                        <a href="javascript:alert(1)">js link</a>,
+                        <a href=" data:text/html,&lt;script&gt;alert(1)&lt;/script&gt;">data link</a>,
+                        <a href="//evil.example/proto-rel">proto relative</a>.
+                    </p>
+                </article>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val article = extractor.extractFromHtml(articleHtml, "https://example.com/post")
+        val content = article.contentHtml
+        assertTrue(content.contains("href=\"https://example.com/full\""))
+        assertTrue(content.contains("href=\"http://example.com/plain\""))
+        assertTrue(content.contains("href=\"#section-1\""))
+        assertTrue(content.contains("href=\"/articles/next\""))
+        assertTrue(!content.contains("file://"))
+        assertTrue(!content.contains("intent:"))
+        assertTrue(!content.contains("javascript:"))
+        assertTrue(!content.contains("data:text/html"))
+        assertTrue(!content.contains("//evil.example"))
+
+        val parser = com.crosssend.app.network.RssFeedParser()
+        val rssXml = """
+            <?xml version="1.0" encoding="UTF-8" ?>
+            <rss version="2.0">
+              <channel>
+                <title>URI Allowlist Feed</title>
+                <item>
+                  <title>Links and Images</title>
+                  <link>https://example.com/1</link>
+                  <description><![CDATA[
+                    <p>
+                      <a href="https://example.com/a">https</a>
+                      <a href="http://example.com/b">http</a>
+                      <a href="#top">anchor</a>
+                      <a href="/local/path">path</a>
+                      <a href="file:///etc/shadow">file</a>
+                      <a href="intent://evil">intent</a>
+                      <a href=" data:text/html,xss">data</a>
+                    </p>
+                    <img src="https://cdn.example.com/good.jpg" alt="good" />
+                    <img src=" data:image/svg+xml,<svg onload=alert(1)/>" alt="obfuscated data" />
+                    <img src="javascript:alert(1)" alt="js img" />
+                    <img src="file:///etc/passwd" alt="file img" />
+                    <img src="/relative-img.png" alt="rel img" />
+                  ]]></description>
+                </item>
+              </channel>
+            </rss>
+        """.trimIndent()
+
+        val feed = parser.parseFeedXml(rssXml, "https://example.com/feed.xml")
+        val feedHtml = feed.items.single().contentHtml
+        assertTrue(feedHtml.contains("href=\"https://example.com/a\""))
+        assertTrue(feedHtml.contains("href=\"http://example.com/b\""))
+        assertTrue(feedHtml.contains("href=\"#top\""))
+        assertTrue(feedHtml.contains("href=\"/local/path\""))
+        assertTrue(feedHtml.contains("src=\"https://cdn.example.com/good.jpg\""))
+
+        assertTrue(!feedHtml.contains("file://"))
+        assertTrue(!feedHtml.contains("intent:"))
+        assertTrue(!feedHtml.contains("data:text/html"))
+        assertTrue(!feedHtml.contains("obfuscated data"))
+        assertTrue(!feedHtml.contains("js img"))
+        assertTrue(!feedHtml.contains("file img"))
+        assertTrue(!feedHtml.contains("rel img"))
+    }
 }
 

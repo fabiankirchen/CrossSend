@@ -1,8 +1,8 @@
 package com.crosssend.app.ui.screens
 
-import android.widget.Toast
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -14,10 +14,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,6 +28,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ViewList
@@ -34,8 +38,8 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.GridView
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RssFeed
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetDefaults
@@ -50,116 +54,108 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SheetValue
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.crosssend.app.CrossSendApp
 import com.crosssend.app.R
+import com.crosssend.app.WebArticleLoginRequest
+import com.crosssend.app.converter.DocumentProcessor
+import com.crosssend.app.converter.EInkImageOptimizer
 import com.crosssend.app.data.local.FeedArticleEntity
 import com.crosssend.app.data.local.FeedEntity
-import com.crosssend.app.sync.RssSyncWorker
+import com.crosssend.app.ui.viewmodel.FeedsViewModel
+import com.crosssend.app.ui.viewmodel.resolve
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FeedsScreen(
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: FeedsViewModel = viewModel()
 ) {
-    val context = LocalContext.current
     val resources = LocalResources.current
-    val app = CrossSendApp.instance
-    val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val snackbarHostState = remember { SnackbarHostState() }
 
     var showAddFeedDialog by remember { mutableStateOf(false) }
     var showSourcesSheet by remember { mutableStateOf(false) }
-    var selectedFeed by remember { mutableStateOf<FeedEntity?>(null) }
-    var isGridView by remember { mutableStateOf(false) }
-    var isRefreshing by remember { mutableStateOf(false) }
     var feedToDelete by remember { mutableStateOf<FeedEntity?>(null) }
 
-    val feeds by app.database.feedDao().getAllFeeds().collectAsState(initial = emptyList())
-    val allCachedArticles by app.database.feedDao().getAllFeedArticlesFlow().collectAsState(initial = emptyList())
+    val feeds by viewModel.feeds.collectAsStateWithLifecycle()
+    val articles by viewModel.articles.collectAsStateWithLifecycle()
+    val allCachedArticles by viewModel.allCachedArticles.collectAsStateWithLifecycle()
+    val selectedFeed by viewModel.selectedFeed.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val isGridView by viewModel.isGridView.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val isAddingFeed by viewModel.isAddingFeed.collectAsStateWithLifecycle()
+    val previewArticle by viewModel.previewArticle.collectAsStateWithLifecycle()
+    val savingArticleLinks by viewModel.savingArticleLinks.collectAsStateWithLifecycle()
+    val loadingMoreFeedIds by viewModel.loadingMoreFeedIds.collectAsStateWithLifecycle()
+    val feedPageByFeedId by viewModel.feedPageByFeedId.collectAsStateWithLifecycle()
+    val nextPageUrlByFeedId by viewModel.nextPageUrlByFeedId.collectAsStateWithLifecycle()
+    val disabledAutoSyncFeedIds by viewModel.disabledAutoSyncFeedIds.collectAsStateWithLifecycle()
+    val savedArticleUrls by viewModel.savedArticleUrls.collectAsStateWithLifecycle()
+    val savedNormalizedTitles by viewModel.savedNormalizedTitles.collectAsStateWithLifecycle()
 
-    fun doRefresh() {
-        if (isRefreshing) return
-        scope.launch {
-            isRefreshing = true
-            try {
-                withContext(Dispatchers.IO) {
-                    val currentFeed = selectedFeed
-                    if (currentFeed == null) {
-                        RssSyncWorker.syncAllFeeds(app)
-                    } else {
-                        RssSyncWorker.syncFeed(app, currentFeed)
-                    }
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                Toast.makeText(context, resources.getString(R.string.feeds_toast_refresh_error, e.message ?: ""), Toast.LENGTH_SHORT).show()
-            } finally {
-                isRefreshing = false
-            }
+    LaunchedEffect(viewModel, resources) {
+        viewModel.uiEvents.collect { message ->
+            snackbarHostState.showSnackbar(message.resolve(resources))
         }
     }
 
-    LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
-            try {
-                val currentFeeds = app.database.feedDao().getAllFeedsList()
-                if (currentFeeds.isNotEmpty()) {
-                    val tenMinutesAgo = System.currentTimeMillis() - 10 * 60 * 1000L
-                    val hasStale = currentFeeds.any { it.lastFetchedAt < tenMinutesAgo }
-                    if (hasStale) {
-                        withContext(Dispatchers.Main) { isRefreshing = true }
-                        RssSyncWorker.syncAllFeeds(app)
-                    }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                // Silent background refresh
-            } finally {
-                withContext(Dispatchers.Main) { isRefreshing = false }
-            }
-        }
+    LaunchedEffect(viewModel) {
+        viewModel.refreshIfStale()
     }
 
-    // Intercept back gesture when a specific feed is filtered (Predictive Back)
     var backProgress by remember { mutableFloatStateOf(0f) }
-    PredictiveBackHandler(enabled = selectedFeed != null) { progress ->
+    PredictiveBackHandler(
+        enabled = previewArticle != null || searchQuery.isNotEmpty() || selectedFeed != null
+    ) { progress ->
         try {
             progress.collect { event ->
                 backProgress = event.progress
             }
-            selectedFeed = null
+            when {
+                previewArticle != null -> viewModel.dismissArticlePreview()
+                searchQuery.isNotEmpty() -> {
+                    viewModel.onSearchQueryChange("")
+                    focusManager.clearFocus(force = true)
+                }
+                selectedFeed != null -> viewModel.selectFeed(null)
+            }
         } catch (_: CancellationException) {
             backProgress = 0f
         } finally {
@@ -168,9 +164,12 @@ fun FeedsScreen(
     }
 
     Scaffold(
+        modifier = modifier,
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
+                    val activeFilter = selectedFeed
                     Column {
                         Text(
                             text = stringResource(R.string.feeds_title),
@@ -179,10 +178,10 @@ fun FeedsScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = if (selectedFeed == null) {
+                            text = if (activeFilter == null) {
                                 stringResource(R.string.feeds_subtitle_all)
                             } else {
-                                stringResource(R.string.feeds_subtitle_filter, selectedFeed!!.title)
+                                stringResource(R.string.feeds_subtitle_filter, activeFilter.title)
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -195,7 +194,7 @@ fun FeedsScreen(
                     IconButton(
                         onClick = {
                             if (selectedFeed != null) {
-                                selectedFeed = null
+                                viewModel.selectFeed(null)
                             } else {
                                 onBack()
                             }
@@ -203,21 +202,27 @@ fun FeedsScreen(
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = if (selectedFeed != null) stringResource(R.string.feeds_cd_reset_filter) else stringResource(R.string.feeds_cd_back_to_library)
+                            contentDescription = if (selectedFeed != null) {
+                                stringResource(R.string.feeds_cd_reset_filter)
+                            } else {
+                                stringResource(R.string.feeds_cd_back_to_library)
+                            }
                         )
                     }
                 },
                 actions = {
                     FilledTonalIconButton(
-                        onClick = { isGridView = !isGridView },
-                        modifier = Modifier
-                            .padding(end = 8.dp)
-                            .size(38.dp)
+                        onClick = viewModel::toggleGridView,
+                        modifier = Modifier.padding(end = 4.dp)
                     ) {
                         Icon(
                             imageVector = if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
-                            contentDescription = if (isGridView) stringResource(R.string.feeds_cd_list_view) else stringResource(R.string.feeds_cd_grid_view),
-                            modifier = Modifier.size(19.dp)
+                            contentDescription = if (isGridView) {
+                                stringResource(R.string.feeds_cd_list_view)
+                            } else {
+                                stringResource(R.string.feeds_cd_grid_view)
+                            },
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 },
@@ -231,84 +236,167 @@ fun FeedsScreen(
             FeedsFilterFab(
                 selectedFeed = selectedFeed,
                 onOpenSourcesSheet = { showSourcesSheet = true },
-                onResetFilter = { selectedFeed = null }
+                onResetFilter = { viewModel.selectFeed(null) }
             )
         }
     ) { paddingValues ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .imePadding()
                 .graphicsLayer {
                     val scale = 1f - (backProgress * 0.04f)
                     scaleX = scale
                     scaleY = scale
                 }
         ) {
-            FeedsTab(
-                modifier = Modifier.fillMaxSize(),
-                selectedFeed = selectedFeed,
-                onSelectFeed = { selectedFeed = it },
-                isGridView = isGridView,
-                feeds = feeds,
-                allCachedArticles = allCachedArticles,
-                isRefreshing = isRefreshing,
-                onRefresh = { doRefresh() },
-                onOpenAddFeedDialog = { showAddFeedDialog = true }
-            )
-
-            if (showSourcesSheet) {
-                FeedsSourcesSheet(
-                    feeds = feeds,
-                    allCachedArticles = allCachedArticles,
-                    selectedFeed = selectedFeed,
-                    onSelectFeed = { feed ->
-                        selectedFeed = feed
+            AnimatedVisibility(visible = feeds.isNotEmpty() || searchQuery.isNotEmpty()) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = viewModel::onSearchQueryChange,
+                    singleLine = true,
+                    shape = CircleShape,
+                    placeholder = {
+                        Text(
+                            text = stringResource(R.string.main_search_hint),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     },
-                    onDismiss = { showSourcesSheet = false },
-                    onOpenAddFeedDialog = { showAddFeedDialog = true },
-                    onDeleteFeed = { feed -> feedToDelete = feed }
-                )
-            }
-
-            if (showAddFeedDialog) {
-                AddFeedDialog(
-                    onDismiss = { showAddFeedDialog = false },
-                    onFeedAdded = { }
-                )
-            }
-
-            // Delete Feed Confirmation Dialog
-            feedToDelete?.let { feed ->
-                AlertDialog(
-                    onDismissRequest = { feedToDelete = null },
-                    title = { Text(stringResource(R.string.feeds_dialog_delete_title)) },
-                    text = { Text(stringResource(R.string.feeds_dialog_delete_message, feed.title)) },
-                    confirmButton = {
-                        TextButton(
-                            onClick = {
-                                scope.launch {
-                                    withContext(Dispatchers.IO) {
-                                        app.database.feedDao().deleteArticlesForFeed(feed.id)
-                                        app.database.feedDao().delete(feed)
-                                    }
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = stringResource(R.string.main_search_hint)
+                        )
+                    },
+                    trailingIcon = if (searchQuery.isNotEmpty()) {
+                        {
+                            IconButton(
+                                onClick = {
+                                    viewModel.onSearchQueryChange("")
+                                    focusManager.clearFocus(force = true)
                                 }
-                                if (selectedFeed?.id == feed.id) {
-                                    selectedFeed = null
-                                }
-                                feedToDelete = null
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = resources.getString(R.string.feed_clear_search)
+                                )
                             }
-                        ) {
-                            Text(stringResource(R.string.feeds_action_remove), color = MaterialTheme.colorScheme.error)
+                        }
+                    } else {
+                        null
+                    },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus(force = true) }),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                        unfocusedBorderColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                FeedsTab(
+                    modifier = Modifier.fillMaxSize(),
+                    articles = articles,
+                    feeds = feeds,
+                    selectedFeed = selectedFeed,
+                    searchQuery = searchQuery,
+                    isGridView = isGridView,
+                    isRefreshing = isRefreshing,
+                    savingArticleLinks = savingArticleLinks,
+                    loadingMoreFeedIds = loadingMoreFeedIds,
+                    feedPageByFeedId = feedPageByFeedId,
+                    nextPageUrlByFeedId = nextPageUrlByFeedId,
+                    savedArticleUrls = savedArticleUrls,
+                    savedNormalizedTitles = savedNormalizedTitles,
+                    previewArticle = previewArticle,
+                    onRefresh = viewModel::refreshFeeds,
+                    onLoadMore = viewModel::loadMoreArticles,
+                    onSaveArticle = { article -> viewModel.sendArticleToReader(article) },
+                    onOpenArticlePreview = viewModel::openArticlePreview,
+                    onDismissArticlePreview = viewModel::dismissArticlePreview,
+                    onOpenOriginalUrl = { article ->
+                        val normalized = DocumentProcessor.normalizeExternalHttpsUrl(article.link)
+                        if (EInkImageOptimizer.isSafeHttpsExternalUrl(normalized)) {
+                            viewModel.dismissArticlePreview()
+                            CrossSendApp.instance.pendingWebViewRequest.value = WebArticleLoginRequest(
+                                url = normalized,
+                                title = article.title
+                            )
                         }
                     },
-                    dismissButton = {
-                        TextButton(onClick = { feedToDelete = null }) {
-                            Text(stringResource(R.string.feeds_action_cancel))
-                        }
+                    onOpenAddFeedDialog = { showAddFeedDialog = true },
+                    onClearSearch = {
+                        viewModel.onSearchQueryChange("")
+                        focusManager.clearFocus(force = true)
                     }
                 )
             }
+        }
+
+        if (showSourcesSheet) {
+            FeedsSourcesSheet(
+                feeds = feeds,
+                allCachedArticles = allCachedArticles,
+                selectedFeed = selectedFeed,
+                disabledAutoSyncFeedIds = disabledAutoSyncFeedIds,
+                onSelectFeed = viewModel::selectFeed,
+                onDismiss = { showSourcesSheet = false },
+                onOpenAddFeedDialog = { showAddFeedDialog = true },
+                onDeleteFeed = { feed -> feedToDelete = feed }
+            )
+        }
+
+        if (showAddFeedDialog) {
+            AddFeedDialog(
+                onDismiss = {
+                    if (!isAddingFeed) showAddFeedDialog = false
+                },
+                isAdding = isAddingFeed,
+                onAddFeed = { url, customTitle ->
+                    viewModel.addFeed(url, customTitle) {
+                        showAddFeedDialog = false
+                    }
+                }
+            )
+        }
+
+        feedToDelete?.let { feed ->
+            AlertDialog(
+                onDismissRequest = { feedToDelete = null },
+                title = { Text(stringResource(R.string.feeds_dialog_delete_title)) },
+                text = { Text(stringResource(R.string.feeds_dialog_delete_message, feed.title)) },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            viewModel.deleteFeed(feed)
+                            feedToDelete = null
+                        },
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                    ) {
+                        Text(stringResource(R.string.feeds_action_remove), color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { feedToDelete = null },
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                    ) {
+                        Text(stringResource(R.string.feeds_action_cancel))
+                    }
+                }
+            )
         }
     }
 }
@@ -383,9 +471,7 @@ fun FeedsFilterFab(
 
                     IconButton(
                         onClick = onResetFilter,
-                        modifier = Modifier
-                            .padding(end = 6.dp)
-                            .size(36.dp)
+                        modifier = Modifier.padding(end = 2.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
@@ -408,7 +494,9 @@ fun FeedsSourcesSheet(
     onSelectFeed: (FeedEntity?) -> Unit,
     onDismiss: () -> Unit,
     onOpenAddFeedDialog: () -> Unit,
-    onDeleteFeed: (FeedEntity) -> Unit
+    onDeleteFeed: (FeedEntity) -> Unit,
+    modifier: Modifier = Modifier,
+    disabledAutoSyncFeedIds: Set<Long> = emptySet()
 ) {
     val cachedCountByFeed = remember(allCachedArticles) {
         allCachedArticles.groupingBy { it.feedId }.eachCount()
@@ -416,6 +504,7 @@ fun FeedsSourcesSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        modifier = modifier,
         sheetState = rememberBottomSheetState(
             initialValue = SheetValue.Hidden,
             enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
@@ -429,7 +518,6 @@ fun FeedsSourcesSheet(
                 .fillMaxWidth()
                 .padding(bottom = 32.dp)
         ) {
-            // Header-Zeile
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -455,8 +543,9 @@ fun FeedsSourcesSheet(
                         onDismiss()
                         onOpenAddFeedDialog()
                     },
-                    shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    shape = MaterialTheme.shapes.small,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Add,
@@ -477,18 +566,18 @@ fun FeedsSourcesSheet(
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Eintrag 1 (Immer ganz oben): Alle Quellen (Chronologisch)
                 item {
                     val isAllSelected = selectedFeed == null
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
+                            .defaultMinSize(minHeight = 48.dp)
+                            .clip(MaterialTheme.shapes.medium)
                             .clickable {
                                 onSelectFeed(null)
                                 onDismiss()
                             },
-                        shape = RoundedCornerShape(16.dp),
+                        shape = MaterialTheme.shapes.medium,
                         color = if (isAllSelected) {
                             MaterialTheme.colorScheme.primaryContainer
                         } else {
@@ -504,7 +593,7 @@ fun FeedsSourcesSheet(
                             Box(
                                 modifier = Modifier
                                     .size(40.dp)
-                                    .clip(RoundedCornerShape(12.dp))
+                                    .clip(MaterialTheme.shapes.small)
                                     .background(
                                         if (isAllSelected) {
                                             MaterialTheme.colorScheme.primary
@@ -540,7 +629,11 @@ fun FeedsSourcesSheet(
                                     }
                                 )
                                 Text(
-                                    text = pluralStringResource(R.plurals.feeds_sheet_total_articles, allCachedArticles.size, allCachedArticles.size),
+                                    text = pluralStringResource(
+                                        R.plurals.feeds_sheet_total_articles,
+                                        allCachedArticles.size,
+                                        allCachedArticles.size
+                                    ),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = if (isAllSelected) {
                                         MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
@@ -562,21 +655,22 @@ fun FeedsSourcesSheet(
                     }
                 }
 
-                // Subscribed Feeds
                 items(feeds, key = { it.id }) { feed ->
                     val isFeedSelected = selectedFeed?.id == feed.id
                     val count = cachedCountByFeed[feed.id] ?: 0
                     val domain = feed.url.substringAfter("://").substringBefore('/')
+                    val isAutoSyncDisabled = disabledAutoSyncFeedIds.contains(feed.id)
 
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
+                            .defaultMinSize(minHeight = 48.dp)
+                            .clip(MaterialTheme.shapes.medium)
                             .clickable {
                                 onSelectFeed(feed)
                                 onDismiss()
                             },
-                        shape = RoundedCornerShape(16.dp),
+                        shape = MaterialTheme.shapes.medium,
                         color = if (isFeedSelected) {
                             MaterialTheme.colorScheme.primaryContainer
                         } else {
@@ -591,15 +685,15 @@ fun FeedsSourcesSheet(
                         ) {
                             Box(
                                 modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(
-                                    if (isFeedSelected) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.surfaceContainerHigh
-                                    }
-                                ),
+                                    .size(40.dp)
+                                    .clip(MaterialTheme.shapes.small)
+                                    .background(
+                                        if (isFeedSelected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceContainerHigh
+                                        }
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
@@ -630,12 +724,19 @@ fun FeedsSourcesSheet(
                                     }
                                 )
                                 Text(
-                                    text = pluralStringResource(R.plurals.feeds_sheet_feed_item_subtitle, count, count, domain),
+                                    text = pluralStringResource(
+                                        R.plurals.feeds_sheet_feed_item_subtitle,
+                                        count,
+                                        count,
+                                        domain
+                                    ),
                                     style = MaterialTheme.typography.bodySmall,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     color = if (isFeedSelected) {
                                         MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                    } else if (isAutoSyncDisabled) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
                                     }

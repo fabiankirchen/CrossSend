@@ -30,11 +30,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -101,7 +103,29 @@ class CrossPointWifiManager(
     private val probeBaseClient: okhttp3.OkHttpClient = okhttp3.OkHttpClient.Builder()
         .connectTimeout(WATCHDOG_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .readTimeout(WATCHDOG_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .addInterceptor(LocalDeviceHostValidator.createLocalDeviceCleartextGuardInterceptor())
         .build()
+
+    private val internetBaseClient: okhttp3.OkHttpClient = okhttp3.OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .dns(com.crosssend.app.converter.EInkImageOptimizer.ssrfSafeDns)
+        .addInterceptor(com.crosssend.app.converter.EInkImageOptimizer.httpsOnlyInterceptor)
+        .addNetworkInterceptor(com.crosssend.app.converter.EInkImageOptimizer.httpsOnlyInterceptor)
+        .build()
+
+    private data class SafeInternetClientKey(
+        val connectTimeoutSeconds: Long,
+        val readTimeoutSeconds: Long,
+        val followRedirects: Boolean,
+        val extraNetworkInterceptor: okhttp3.Interceptor?
+    )
+
+    private val internetClientLock = Any()
+    @Volatile
+    private var cachedInternetNetwork: Network? = null
+    private val cachedInternetClients = HashMap<Long, okhttp3.OkHttpClient>()
+    private val cachedSafeInternetClients = HashMap<SafeInternetClientKey, okhttp3.OkHttpClient>()
 
     @Volatile
     private var cachedApProbeNetwork: Network? = null
@@ -216,12 +240,24 @@ class CrossPointWifiManager(
             .getString("lan_base_url", "http://crosspoint.local") ?: "http://crosspoint.local"
     }
 
-    fun setLanBaseUrl(url: String) {
-        val clean = url.trim()
+    fun setLanBaseUrl(url: String): Boolean {
+        if (url.isBlank()) {
+            context.getSharedPreferences("crosspoint_prefs", Context.MODE_PRIVATE)
+                .edit {
+                    remove("lan_base_url")
+                }
+            return true
+        }
+        val normalized = LocalDeviceHostValidator.normalizeLocalDeviceUrl(url)
+        if (normalized == null) {
+            Log.w(tag, "Rejected invalid or non-local LAN base URL")
+            return false
+        }
         context.getSharedPreferences("crosspoint_prefs", Context.MODE_PRIVATE)
             .edit {
-                putString("lan_base_url", clean)
+                putString("lan_base_url", normalized)
             }
+        return true
     }
 
     /**
@@ -266,7 +302,7 @@ class CrossPointWifiManager(
         }
         val effectiveSsid = candidatePrefix.trim().ifBlank { "Cross" }
         _connectionState.value = WifiConnectionState.ConnectingToAp
-        Log.d(tag, "Requesting connection to Wi-Fi SSID pattern: $effectiveSsid")
+        Log.d(tag, "Requesting connection to CrossPoint AP Wi-Fi network")
 
         try {
             val specifier = WifiNetworkSpecifier.Builder()
@@ -427,26 +463,97 @@ class CrossPointWifiManager(
     }
 
     /**
+     * Returns a cached OkHttpClient explicitly bound to the phone's internet network (Cellular/WAN)
+     * when available, sharing the ConnectionPool and Dispatcher of [internetBaseClient].
+     */
+    fun getInternetOkHttpClient(timeoutSeconds: Long = 15): okhttp3.OkHttpClient {
+        val internetNet = getInternetNetwork()
+        synchronized(internetClientLock) {
+            if (internetNet != cachedInternetNetwork) {
+                cachedInternetClients.clear()
+                cachedSafeInternetClients.clear()
+                cachedInternetNetwork = internetNet
+            }
+            if (internetNet == null && timeoutSeconds == 15L) {
+                return internetBaseClient
+            }
+            return cachedInternetClients.getOrPut(timeoutSeconds) {
+                buildInternetOkHttpClientBuilder(timeoutSeconds, internetNet).build()
+            }
+        }
+    }
+
+    /**
+     * Returns a cached SSRF-hardened, HTTPS-only OkHttpClient bound to the phone's internet network
+     * when available, sharing the ConnectionPool and Dispatcher of [internetBaseClient].
+     */
+    fun getSafeInternetClient(
+        connectTimeoutSeconds: Long = 15,
+        readTimeoutSeconds: Long = connectTimeoutSeconds,
+        followRedirects: Boolean = true,
+        extraNetworkInterceptor: okhttp3.Interceptor? = null
+    ): okhttp3.OkHttpClient {
+        val internetNet = getInternetNetwork()
+        val key = SafeInternetClientKey(
+            connectTimeoutSeconds = connectTimeoutSeconds,
+            readTimeoutSeconds = readTimeoutSeconds,
+            followRedirects = followRedirects,
+            extraNetworkInterceptor = extraNetworkInterceptor
+        )
+        synchronized(internetClientLock) {
+            if (internetNet != cachedInternetNetwork) {
+                cachedInternetClients.clear()
+                cachedSafeInternetClients.clear()
+                cachedInternetNetwork = internetNet
+            }
+            return cachedSafeInternetClients.getOrPut(key) {
+                val baseClient = if (internetNet == null && connectTimeoutSeconds == 15L) {
+                    internetBaseClient
+                } else {
+                    cachedInternetClients.getOrPut(connectTimeoutSeconds) {
+                        buildInternetOkHttpClientBuilder(connectTimeoutSeconds, internetNet).build()
+                    }
+                }
+                baseClient.newBuilder()
+                    .connectTimeout(connectTimeoutSeconds, TimeUnit.SECONDS)
+                    .readTimeout(readTimeoutSeconds, TimeUnit.SECONDS)
+                    .followRedirects(followRedirects)
+                    .followSslRedirects(followRedirects)
+                    .addInterceptor(com.crosssend.app.converter.EInkImageOptimizer.ssrfSafeInterceptor)
+                    .addNetworkInterceptor(com.crosssend.app.converter.EInkImageOptimizer.ssrfSafeInterceptor)
+                    .apply {
+                        if (extraNetworkInterceptor != null) {
+                            addNetworkInterceptor(extraNetworkInterceptor)
+                        }
+                    }
+                    .build()
+            }
+        }
+    }
+
+    /**
      * Creates an OkHttpClient.Builder explicitly bound to the phone's internet network (Cellular/WAN),
      * completely bypassing the CrossPoint AP captive portal, with DNS-level SSRF protection
      * and strict HTTPS enforcement for external internet traffic.
      */
     fun getInternetOkHttpClientBuilder(timeoutSeconds: Long = 15): okhttp3.OkHttpClient.Builder {
-        val builder = okhttp3.OkHttpClient.Builder()
+        return buildInternetOkHttpClientBuilder(timeoutSeconds, getInternetNetwork())
+    }
+
+    private fun buildInternetOkHttpClientBuilder(
+        timeoutSeconds: Long,
+        internetNet: Network?
+    ): okhttp3.OkHttpClient.Builder {
+        val builder = internetBaseClient.newBuilder()
             .connectTimeout(timeoutSeconds, TimeUnit.SECONDS)
             .readTimeout(timeoutSeconds, TimeUnit.SECONDS)
-            .addInterceptor(com.crosssend.app.converter.EInkImageOptimizer.httpsOnlyInterceptor)
-            .addNetworkInterceptor(com.crosssend.app.converter.EInkImageOptimizer.httpsOnlyInterceptor)
-        val internetNet = getInternetNetwork()
         if (internetNet != null) {
             builder.socketFactory(internetNet.socketFactory)
             builder.dns(com.crosssend.app.converter.EInkImageOptimizer.wrapWithSafeDns(object : okhttp3.Dns {
-                override fun lookup(hostname: String): List<java.net.InetAddress> {
+                override fun lookup(hostname: String): List<InetAddress> {
                     return internetNet.getAllByName(hostname).toList()
                 }
             }))
-        } else {
-            builder.dns(com.crosssend.app.converter.EInkImageOptimizer.ssrfSafeDns)
         }
         return builder
     }
@@ -734,6 +841,24 @@ class CrossPointWifiManager(
             .build()
     }
 
+    private fun probeValidStatusJson(baseUrl: String, client: okhttp3.OkHttpClient): Boolean {
+        return try {
+            val req = okhttp3.Request.Builder().url("$baseUrl/api/status").get().build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return false
+                val body = resp.body?.let {
+                    com.crosssend.app.converter.EInkImageOptimizer.readBoundedString(it, 64L * 1024)
+                } ?: return false
+                val trimmed = body.trim()
+                if (!trimmed.startsWith("{")) return false
+                JSONObject(trimmed)
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun probeStatusEndpoint(baseUrl: String, apNetwork: Network?, timeoutMs: Long): Boolean {
         val cleanBase = normalizeHttpUrl(baseUrl)
         if (cleanBase == "http://" || cleanBase == "https://") return false
@@ -867,49 +992,39 @@ class CrossPointWifiManager(
                             val buf = ByteArray(256)
                             val recvPacket = DatagramPacket(buf, buf.size)
                             socket.receive(recvPacket)
+                            val packetAddress = recvPacket.address
+                            if (packetAddress == null || !LocalDeviceHostValidator.isAllowedLocalAddress(packetAddress)) {
+                                Log.w(tag, "Ignored UDP discovery reply from non-local source address")
+                                return@async null
+                            }
+
                             val reply = String(recvPacket.data, 0, recvPacket.length, Charsets.UTF_8).trim()
-                            val replyLower = reply.lowercase()
+                            val replyLower = reply.lowercase(Locale.ROOT)
                             val isKnownDevice = listOf(
                                 "crosspoint", "crossplay", "crossink", "crossmux", "papyrix", "snapix", "inx",
                                 "xteink", "picco", "pico", "boox", "eegoread", "m5paper", "reterminal", "murphy"
                             ).any { replyLower.startsWith(it) }
                             if (isKnownDevice) {
                                 val portPart = if (reply.contains(';')) reply.substringAfterLast(';').trim() else ""
-                                val portCandidate = portPart.toIntOrNull()
-                                val host = recvPacket.address.hostAddress ?: ""
-                                if (host.isNotBlank()) {
-                                    val port80Url = "http://$host"
-                                    var detectedIp: String? = null
-
-                                    try {
-                                        val checkReq = okhttp3.Request.Builder().url("$port80Url/api/status").get().build()
-                                        lanProbeClient.newCall(checkReq).execute().use { checkResp ->
-                                            if (checkResp.isSuccessful) {
-                                                detectedIp = port80Url
-                                            }
+                                val validPort = portPart.toIntOrNull()?.takeIf { it in 1..65535 }
+                                val rawHost = packetAddress.hostAddress?.substringBefore('%').orEmpty()
+                                val formattedHost = if (rawHost.contains(':')) "[$rawHost]" else rawHost
+                                val port80Url = LocalDeviceHostValidator.normalizeLocalDeviceUrl("http://$formattedHost")
+                                if (port80Url != null) {
+                                    var verifiedUrl: String? = null
+                                    if (probeValidStatusJson(port80Url, lanProbeClient)) {
+                                        verifiedUrl = port80Url
+                                    } else if (validPort != null && validPort != 80) {
+                                        val candidateUrl = LocalDeviceHostValidator.normalizeLocalDeviceUrl("http://$formattedHost:$validPort")
+                                        if (candidateUrl != null && probeValidStatusJson(candidateUrl, lanProbeClient)) {
+                                            verifiedUrl = candidateUrl
                                         }
-                                    } catch (_: Exception) {}
-
-                                    if (detectedIp == null && portCandidate != null && portCandidate != 80) {
-                                        val candidateUrl = "http://$host:$portCandidate"
-                                        try {
-                                            val checkReq = okhttp3.Request.Builder().url("$candidateUrl/api/status").get().build()
-                                            lanProbeClient.newCall(checkReq).execute().use { checkResp ->
-                                                if (checkResp.isSuccessful) {
-                                                    detectedIp = candidateUrl
-                                                }
-                                            }
-                                        } catch (_: Exception) {}
                                     }
 
-                                    val finalUrl = detectedIp ?: if (portCandidate != null && portCandidate != 80 && portCandidate != 81) {
-                                        "http://$host:$portCandidate"
-                                    } else {
-                                        port80Url
+                                    if (verifiedUrl != null) {
+                                        foundDeferred.complete(verifiedUrl)
+                                        return@async verifiedUrl
                                     }
-
-                                    foundDeferred.complete(finalUrl)
-                                    return@async finalUrl
                                 }
                             }
                         }

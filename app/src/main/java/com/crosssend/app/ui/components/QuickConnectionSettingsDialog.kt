@@ -7,8 +7,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -27,24 +28,28 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.crosssend.app.CrossSendApp
 import com.crosssend.app.R
+import com.crosssend.app.network.LocalDeviceHostValidator
 import kotlinx.coroutines.launch
 
 @Composable
 fun QuickConnectionSettingsDialog(
     onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
     onConnectRequested: (() -> Unit)? = null
 ) {
     val app = CrossSendApp.instance
     val scope = rememberCoroutineScope()
     var ssidInput by remember { mutableStateOf(app.wifiManager.getApSsid()) }
     var urlInput by remember { mutableStateOf(app.webDavClient.getBaseUrl()) }
+    var urlError by remember { mutableStateOf(false) }
     var isScanningLan by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        modifier = modifier.imePadding(),
         title = { Text(stringResource(R.string.conn_dialog_title), fontWeight = FontWeight.Bold) },
         text = {
-            Column {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     text = stringResource(R.string.conn_dialog_desc),
                     style = MaterialTheme.typography.bodySmall,
@@ -90,9 +95,18 @@ fun QuickConnectionSettingsDialog(
                 // 2. WebDAV URL / IP Input
                 OutlinedTextField(
                     value = urlInput,
-                    onValueChange = { urlInput = it },
+                    onValueChange = {
+                        urlInput = it
+                        urlError = false
+                    },
                     label = { Text(stringResource(R.string.conn_url_label)) },
                     placeholder = { Text(stringResource(R.string.conn_url_placeholder)) },
+                    isError = urlError,
+                    supportingText = if (urlError) {
+                        { Text(stringResource(R.string.error_invalid_local_device_url)) }
+                    } else {
+                        null
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -111,9 +125,12 @@ fun QuickConnectionSettingsDialog(
                                 scope.launch {
                                     val found = app.wifiManager.autoDetectCrossPoint()
                                     if (found != null) {
-                                        urlInput = found
-                                        app.webDavClient.updateBaseUrl(found)
-                                        app.wifiManager.setConnectedOnLan(found)
+                                        val normalizedFound = LocalDeviceHostValidator.normalizeLocalDeviceUrl(found)
+                                        if (normalizedFound != null && app.webDavClient.updateBaseUrl(normalizedFound)) {
+                                            urlInput = normalizedFound
+                                            urlError = false
+                                            app.wifiManager.setConnectedOnLan(normalizedFound)
+                                        }
                                     }
                                     isScanningLan = false
                                 }
@@ -123,17 +140,26 @@ fun QuickConnectionSettingsDialog(
                     )
                     FilterChip(
                         selected = urlInput.contains("crossplay.local"),
-                        onClick = { urlInput = "http://crossplay.local" },
+                        onClick = {
+                            urlInput = "http://crossplay.local"
+                            urlError = false
+                        },
                         label = { Text("crossplay.local") }
                     )
                     FilterChip(
                         selected = urlInput.contains("crosspoint.local"),
-                        onClick = { urlInput = "http://crosspoint.local" },
+                        onClick = {
+                            urlInput = "http://crosspoint.local"
+                            urlError = false
+                        },
                         label = { Text("crosspoint.local") }
                     )
                     FilterChip(
                         selected = urlInput.contains("192.168.4.1"),
-                        onClick = { urlInput = "http://192.168.4.1" },
+                        onClick = {
+                            urlInput = "http://192.168.4.1"
+                            urlError = false
+                        },
                         label = { Text(stringResource(R.string.conn_chip_ap_ip)) }
                     )
                 }
@@ -143,17 +169,20 @@ fun QuickConnectionSettingsDialog(
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 TextButton(
                     onClick = {
+                        val normalizedUrl = LocalDeviceHostValidator.normalizeLocalDeviceUrl(urlInput)
+                        if (normalizedUrl == null) {
+                            urlError = true
+                            return@TextButton
+                        }
+                        val lanOk = app.wifiManager.setLanBaseUrl(normalizedUrl)
+                        val webDavOk = app.webDavClient.updateBaseUrl(normalizedUrl)
+                        if (!lanOk || !webDavOk) {
+                            urlError = true
+                            return@TextButton
+                        }
+
                         val cleanSsid = ssidInput.trim().ifBlank { "CrossPoint" }
                         app.wifiManager.setApSsid(cleanSsid)
-
-                        val clean = urlInput.trim().trimEnd('/')
-                        val finalUrl = if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
-                            "http://$clean"
-                        } else {
-                            clean
-                        }
-                        app.webDavClient.updateBaseUrl(finalUrl)
-
                         onDismiss()
                         onConnectRequested?.invoke()
                     }

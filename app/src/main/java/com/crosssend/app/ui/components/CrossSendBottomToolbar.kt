@@ -173,12 +173,11 @@ fun CrossSendBottomToolbar(
         // Right Element: Material 3 Expressive FAB
         FloatingActionButton(
             onClick = {
-                if (isBusy) {
-                    onConnect()
-                } else if (isConnected) {
-                    if (!isSyncing) onSync()
-                } else {
-                    onConnect()
+                when {
+                    isSyncing -> Unit
+                    isSearchingOrConnecting -> onConnect()
+                    isConnected -> onSync()
+                    else -> onConnect()
                 }
             },
             modifier = Modifier.size(60.dp),

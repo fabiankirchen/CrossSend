@@ -2,7 +2,6 @@
 package com.crosssend.app.ui.screens
 
 import android.graphics.Bitmap
-import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -11,9 +10,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,42 +22,49 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RssFeed
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,183 +72,87 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.crosssend.app.CrossSendApp
 import com.crosssend.app.R
+import com.crosssend.app.converter.DocumentProcessor
+import com.crosssend.app.converter.EInkImageOptimizer
 import com.crosssend.app.data.local.FeedArticleEntity
 import com.crosssend.app.data.local.FeedEntity
 import com.crosssend.app.sync.RssSyncWorker
 import com.crosssend.app.util.DateUtils
 import com.crosssend.app.util.RemoteImageLoader
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import org.jsoup.Jsoup
+import java.text.DateFormat
 import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun FeedsTab(
     modifier: Modifier = Modifier,
+    articles: List<FeedArticleEntity> = emptyList(),
+    feeds: List<FeedEntity> = emptyList(),
     selectedFeed: FeedEntity? = null,
-    onSelectFeed: (FeedEntity?) -> Unit = {},
-    refreshTrigger: Long = 0L,
-    onOpenAddFeedDialog: () -> Unit = {},
+    searchQuery: String = "",
     isGridView: Boolean = false,
-    feeds: List<FeedEntity>? = null,
-    allCachedArticles: List<FeedArticleEntity>? = null,
     isRefreshing: Boolean = false,
-    onRefresh: () -> Unit = {}
+    savingArticleLinks: Set<String> = emptySet(),
+    loadingMoreFeedIds: Set<Long> = emptySet(),
+    feedPageByFeedId: Map<Long, Int> = emptyMap(),
+    nextPageUrlByFeedId: Map<Long, String> = emptyMap(),
+    savedArticleUrls: Set<String> = emptySet(),
+    savedNormalizedTitles: Set<String> = emptySet(),
+    previewArticle: FeedArticleEntity? = null,
+    onRefresh: () -> Unit = {},
+    onLoadMore: (FeedEntity) -> Unit = {},
+    onSaveArticle: (FeedArticleEntity) -> Unit = {},
+    onOpenArticlePreview: (FeedArticleEntity) -> Unit = {},
+    onDismissArticlePreview: () -> Unit = {},
+    onOpenOriginalUrl: (FeedArticleEntity) -> Unit = {},
+    onOpenAddFeedDialog: () -> Unit = {},
+    onClearSearch: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val resources = LocalResources.current
-    val app = CrossSendApp.instance
-    val scope = rememberCoroutineScope()
+    val locale = LocalLocale.current.platformLocale
 
     LaunchedEffect(Unit) {
         RssSyncWorker.schedulePeriodicSync(context)
     }
 
-    val effectiveFeeds = feeds ?: app.database.feedDao().getAllFeeds().collectAsState(initial = emptyList()).value
-    val effectiveArticles = allCachedArticles ?: app.database.feedDao().getAllFeedArticlesFlow().collectAsState(initial = emptyList()).value
+    val feedTitleMap = remember(feeds) {
+        feeds.associate { it.id to it.title }
+    }
 
-    val savedUrls by app.database.documentDao().getAllSourceUrls().collectAsState(initial = emptyList())
-    val savedTitles by app.database.documentDao().getAllTitles().collectAsState(initial = emptyList())
+    fun isArticleSaved(article: FeedArticleEntity): Boolean {
+        val link = article.link.trim()
+        if (link.isNotEmpty() && savedArticleUrls.contains(link)) {
+            return true
+        }
+        val normalizedTitle = article.title.trim().lowercase(Locale.ROOT)
+        return normalizedTitle.isNotEmpty() && savedNormalizedTitles.contains(normalizedTitle)
+    }
 
-    val feedPageMap = remember { mutableStateMapOf<Long, Int>() }
-    val loadingMoreMap = remember { mutableStateMapOf<Long, Boolean>() }
-    val nextPageUrlMap = remember { mutableStateMapOf<Long, String?>() }
-    val savingArticlesMap = remember { mutableStateMapOf<String, Boolean>() }
-
-    var localRefreshing by remember { mutableStateOf(false) }
-    val effectiveRefreshing = isRefreshing || localRefreshing
-
-    val handleRefresh: () -> Unit = {
-        if (onRefresh != {}) {
-            onRefresh()
+    fun formatArticleDate(article: FeedArticleEntity): String? {
+        return if (article.publishedTimestamp > 0L) {
+            DateUtils.formatRelativeOrDate(Date(article.publishedTimestamp))
         } else {
-            scope.launch {
-                localRefreshing = true
-                try {
-                    withContext(Dispatchers.IO) {
-                        if (selectedFeed == null) {
-                            RssSyncWorker.syncAllFeeds(app)
-                        } else {
-                            RssSyncWorker.syncFeed(app, selectedFeed)
-                        }
-                    }
-                } catch (e: Exception) {
-                    if (e is kotlinx.coroutines.CancellationException) throw e
-                    Toast.makeText(context, resources.getString(R.string.feeds_toast_refresh_error, e.message ?: ""), Toast.LENGTH_SHORT).show()
-                } finally {
-                    localRefreshing = false
-                }
-            }
-        }
-    }
-
-    // Refresh when triggered from top app bar or parent trigger
-    LaunchedEffect(refreshTrigger) {
-        if (refreshTrigger > 0L) {
-            handleRefresh()
-        }
-    }
-
-    val feedTitleMap = remember(effectiveFeeds) {
-        effectiveFeeds.associate { it.id to it.title }
-    }
-
-    // All cached articles chronologically sorted
-    val sortedArticles = remember(effectiveArticles) {
-        effectiveArticles
-            .distinctBy { it.id }
-            .sortedWith(
-                compareByDescending<FeedArticleEntity> {
-                    if (it.publishedTimestamp > 0L) it.publishedTimestamp else it.fetchedAt
-                }.thenByDescending { it.id }
-            )
-    }
-
-    // Filter by selectedFeed (if null, show all sources chronologically united)
-    val displayArticles = remember(sortedArticles, selectedFeed) {
-        if (selectedFeed == null) {
-            sortedArticles
-        } else {
-            sortedArticles.filter { it.feedId == selectedFeed.id }
-        }
-    }
-
-    fun loadMoreArticles(feed: FeedEntity) {
-        if (loadingMoreMap[feed.id] == true) return
-        val nextPage = (feedPageMap[feed.id] ?: 1) + 1
-
-        scope.launch {
-            loadingMoreMap[feed.id] = true
-            try {
-                val olderFeed = withContext(Dispatchers.IO) {
-                    app.rssFeedParser.fetchFeedPage(feed.url, nextPage, nextPageUrlMap[feed.id])
-                }
-
-                if (olderFeed.items.isNotEmpty()) {
-                    val entities = olderFeed.items.map { item ->
-                        FeedArticleEntity.fromRssItem(feed.id, item)
-                    }
-                    withContext(Dispatchers.IO) {
-                        app.database.feedDao().upsertAndPruneFeed(feed.id, entities, System.currentTimeMillis(), 90)
-                    }
-                    feedPageMap[feed.id] = nextPage
-                    if (!olderFeed.nextPageUrl.isNullOrBlank()) {
-                        nextPageUrlMap[feed.id] = olderFeed.nextPageUrl
-                    }
-                    Toast.makeText(
-                        context,
-                        resources.getQuantityString(R.plurals.feeds_toast_older_loaded, olderFeed.items.size, olderFeed.items.size),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                } else {
-                    Toast.makeText(context, resources.getString(R.string.feeds_toast_no_more_older), Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: Exception) {
-                Toast.makeText(context, resources.getString(R.string.feeds_toast_load_older_error, e.message ?: ""), Toast.LENGTH_SHORT).show()
-            } finally {
-                loadingMoreMap[feed.id] = false
-            }
-        }
-    }
-
-    fun saveArticle(article: FeedArticleEntity) {
-        val feedTitle = feedTitleMap[article.feedId] ?: resources.getString(R.string.feeds_default_feed_title)
-        savingArticlesMap[article.link] = true
-        app.applicationScope.launch {
-            try {
-                val fullHtml = withContext(Dispatchers.IO) {
-                    app.database.feedDao().getArticleContentHtml(article.id)?.takeIf { it.isNotBlank() }
-                        ?: article.contentHtml.takeIf { it.isNotBlank() }
-                        ?: article.description?.takeIf { it.isNotBlank() }?.let { "<p>${org.jsoup.nodes.Entities.escape(it)}</p>" }
-                        ?: "<p>${org.jsoup.nodes.Entities.escape(article.title)}</p>"
-                }
-                val fullArticle = article.copy(contentHtml = fullHtml)
-                app.documentProcessor.processRssItem(fullArticle.toRssItem(), feedTitle)
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(context, resources.getString(R.string.feeds_toast_save_error, e.message ?: ""), Toast.LENGTH_LONG).show()
-                }
-            } finally {
-                savingArticlesMap[article.link] = false
-            }
+            article.pubDate?.takeIf { it.isNotBlank() }
         }
     }
 
     PullToRefreshBox(
-        isRefreshing = effectiveRefreshing,
-        onRefresh = handleRefresh,
+        isRefreshing = isRefreshing,
+        onRefresh = onRefresh,
         modifier = modifier.fillMaxSize()
     ) {
-        if (effectiveFeeds.isEmpty()) {
+        if (feeds.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -269,14 +181,17 @@ fun FeedsTab(
                         textAlign = TextAlign.Center
                     )
                     Spacer(modifier = Modifier.height(16.dp))
-                    FilledTonalButton(onClick = onOpenAddFeedDialog) {
+                    FilledTonalButton(
+                        onClick = onOpenAddFeedDialog,
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                    ) {
                         Icon(Icons.Default.Add, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(stringResource(R.string.feeds_btn_add_first))
                     }
                 }
             }
-        } else if (displayArticles.isEmpty()) {
+        } else if (articles.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -284,7 +199,7 @@ fun FeedsTab(
                     .padding(32.dp),
                 contentAlignment = Alignment.Center
             ) {
-                if (effectiveRefreshing) {
+                if (isRefreshing) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         LoadingIndicator()
                         Spacer(modifier = Modifier.height(16.dp))
@@ -297,6 +212,38 @@ fun FeedsTab(
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                } else if (searchQuery.isNotBlank()) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            modifier = Modifier.size(48.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = stringResource(R.string.main_empty_search_title, searchQuery.trim()),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = stringResource(R.string.main_empty_search_desc),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        FilledTonalButton(
+                            onClick = onClearSearch,
+                            modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(stringResource(R.string.feed_clear_search))
+                        }
                     }
                 } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -317,7 +264,10 @@ fun FeedsTab(
                             fontWeight = FontWeight.SemiBold
                         )
                         Spacer(modifier = Modifier.height(12.dp))
-                        FilledTonalButton(onClick = handleRefresh) {
+                        FilledTonalButton(
+                            onClick = onRefresh,
+                            modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                        ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(stringResource(R.string.feeds_btn_refresh_now))
@@ -326,28 +276,32 @@ fun FeedsTab(
                 }
             }
         } else if (isGridView) {
-            // Adaptive Cover Grid View (Android 17 large-screen / tablet / foldable ready)
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 155.dp),
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
             ) {
-                items(displayArticles, key = { if (it.id != 0L) it.id else "${it.feedId}_${it.link}" }) { article ->
-                    val isSaving = savingArticlesMap[article.link] ?: false
-                    val isAlreadySaved = savedUrls.contains(article.link) ||
-                            savedTitles.any { it.equals(article.title.trim(), ignoreCase = true) }
-                    val feedTitle = feedTitleMap[article.feedId] ?: stringResource(R.string.feeds_default_feed_title)
+                itemsIndexed(
+                    items = articles,
+                    key = { index, article ->
+                        if (article.id != 0L) article.id else "${article.feedId}_${article.link}_$index"
+                    }
+                ) { _, article ->
+                    val isSaving = savingArticleLinks.contains(article.link)
+                    val isAlreadySaved = isArticleSaved(article)
+                    val feedTitle = feedTitleMap[article.feedId] ?: resources.getString(R.string.feeds_default_feed_title)
 
                     Card(
+                        onClick = { onOpenArticlePreview(article) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 4.dp, vertical = 6.dp),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = MaterialTheme.shapes.medium,
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
                         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                     ) {
                         Column(modifier = Modifier.fillMaxWidth()) {
-                            val firstImg = article.imageUrlsJoined.split("\n").map { it.trim() }.firstOrNull { it.isNotBlank() }
+                            val firstImg = extractFirstImageUrl(article)
                             if (firstImg != null) {
                                 RssArticleThumbnail(
                                     imageUrl = firstImg,
@@ -378,7 +332,6 @@ fun FeedsTab(
                                     .fillMaxWidth()
                                     .padding(10.dp)
                             ) {
-                                // Compact Feed Source Badge
                                 FeedSourceBadge(
                                     sourceTitle = feedTitle,
                                     modifier = Modifier.padding(bottom = 6.dp)
@@ -394,11 +347,7 @@ fun FeedsTab(
 
                                 Spacer(modifier = Modifier.height(4.dp))
 
-                                val displayDate = if (article.publishedTimestamp > 0L) {
-                                    DateUtils.formatRelativeOrDate(Date(article.publishedTimestamp))
-                                } else {
-                                    article.pubDate
-                                }
+                                val displayDate = formatArticleDate(article)
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -434,9 +383,11 @@ fun FeedsTab(
                                         FilledTonalButton(
                                             onClick = { },
                                             enabled = false,
-                                            shape = RoundedCornerShape(8.dp),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(30.dp)
+                                            shape = MaterialTheme.shapes.extraSmall,
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                            modifier = Modifier
+                                                .defaultMinSize(minHeight = 36.dp)
+                                                .minimumInteractiveComponentSize()
                                         ) {
                                             LoadingIndicator(
                                                 modifier = Modifier.size(12.dp),
@@ -453,9 +404,11 @@ fun FeedsTab(
                                                 disabledContainerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
                                                 disabledContentColor = MaterialTheme.colorScheme.primary
                                             ),
-                                            shape = RoundedCornerShape(8.dp),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(30.dp)
+                                            shape = MaterialTheme.shapes.extraSmall,
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                            modifier = Modifier
+                                                .defaultMinSize(minHeight = 36.dp)
+                                                .minimumInteractiveComponentSize()
                                         ) {
                                             Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(13.dp))
                                             Spacer(modifier = Modifier.width(3.dp))
@@ -463,10 +416,12 @@ fun FeedsTab(
                                         }
                                     } else {
                                         FilledTonalButton(
-                                            onClick = { saveArticle(article) },
-                                            shape = RoundedCornerShape(8.dp),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(30.dp)
+                                            onClick = { onSaveArticle(article) },
+                                            shape = MaterialTheme.shapes.extraSmall,
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                            modifier = Modifier
+                                                .defaultMinSize(minHeight = 36.dp)
+                                                .minimumInteractiveComponentSize()
                                         ) {
                                             Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(13.dp))
                                             Spacer(modifier = Modifier.width(3.dp))
@@ -479,73 +434,45 @@ fun FeedsTab(
                     }
                 }
 
-                // Pagination or end of list message
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 16.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (selectedFeed != null) {
-                            val isLoadingMore = loadingMoreMap[selectedFeed.id] ?: false
-                            val hasNextPage = nextPageUrlMap[selectedFeed.id] != null
-                            if (isLoadingMore) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    LoadingIndicator(modifier = Modifier.size(20.dp))
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Text(stringResource(R.string.feeds_btn_loading_older), style = MaterialTheme.typography.bodyMedium)
-                                }
-                            } else if (displayArticles.size < 90 && (hasNextPage || displayArticles.size >= 10)) {
-                                OutlinedButton(
-                                    onClick = { loadMoreArticles(selectedFeed) },
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(stringResource(R.string.feeds_btn_load_older, displayArticles.size))
-                                }
-                            } else {
-                                Text(
-                                    text = stringResource(R.string.feeds_all_articles_loaded, displayArticles.size),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        } else {
-                            Text(
-                                text = stringResource(R.string.feeds_all_articles_loaded, displayArticles.size),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    FeedPaginationFooter(
+                        selectedFeed = selectedFeed,
+                        articleCount = articles.size,
+                        isLoadingMore = selectedFeed != null && loadingMoreFeedIds.contains(selectedFeed.id),
+                        hasNextPage = selectedFeed != null && nextPageUrlByFeedId[selectedFeed.id] != null,
+                        currentPage = selectedFeed?.let { feedPageByFeedId[it.id] } ?: 1,
+                        searchActive = searchQuery.isNotBlank(),
+                        onLoadMore = { selectedFeed?.let(onLoadMore) }
+                    )
                 }
 
-                // Generous bottom spacer to scroll past the floating bottom toolbar
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Spacer(modifier = Modifier.height(100.dp))
                 }
             }
         } else {
-            // List View with 68.dp rounded thumbnail & compact feed source badge
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(vertical = 4.dp)
             ) {
                 item { Spacer(modifier = Modifier.height(4.dp)) }
 
-                items(displayArticles, key = { if (it.id != 0L) it.id else "${it.feedId}_${it.link}" }) { article ->
-                    val isSaving = savingArticlesMap[article.link] ?: false
-                    val isAlreadySaved = savedUrls.contains(article.link) ||
-                            savedTitles.any { it.equals(article.title.trim(), ignoreCase = true) }
-                    val feedTitle = feedTitleMap[article.feedId] ?: stringResource(R.string.feeds_default_feed_title)
+                itemsIndexed(
+                    items = articles,
+                    key = { index, article ->
+                        if (article.id != 0L) article.id else "${article.feedId}_${article.link}_$index"
+                    }
+                ) { _, article ->
+                    val isSaving = savingArticleLinks.contains(article.link)
+                    val isAlreadySaved = isArticleSaved(article)
+                    val feedTitle = feedTitleMap[article.feedId] ?: resources.getString(R.string.feeds_default_feed_title)
 
                     Card(
+                        onClick = { onOpenArticlePreview(article) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 6.dp),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = MaterialTheme.shapes.medium,
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
                         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                     ) {
@@ -560,7 +487,6 @@ fun FeedsTab(
                                 verticalAlignment = Alignment.Top
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    // Header row: Compact Feed Source Badge + Date + Reading time
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -571,11 +497,7 @@ fun FeedsTab(
                                             modifier = Modifier.weight(1f, fill = false)
                                         )
 
-                                        val displayDate = if (article.publishedTimestamp > 0L) {
-                                            DateUtils.formatRelativeOrDate(Date(article.publishedTimestamp))
-                                        } else {
-                                            article.pubDate
-                                        }
+                                        val displayDate = formatArticleDate(article)
                                         if (!displayDate.isNullOrBlank()) {
                                             Text(
                                                 text = "·",
@@ -633,13 +555,13 @@ fun FeedsTab(
                                     }
                                 }
 
-                                val firstImg = article.imageUrlsJoined.split("\n").map { it.trim() }.firstOrNull { it.isNotBlank() }
+                                val firstImg = extractFirstImageUrl(article)
                                 if (!firstImg.isNullOrBlank()) {
                                     RssArticleThumbnail(
                                         imageUrl = firstImg,
                                         modifier = Modifier
                                             .size(68.dp)
-                                            .clip(RoundedCornerShape(12.dp))
+                                            .clip(MaterialTheme.shapes.small)
                                     )
                                 }
                             }
@@ -655,7 +577,8 @@ fun FeedsTab(
                                     FilledTonalButton(
                                         onClick = { },
                                         enabled = false,
-                                        shape = RoundedCornerShape(10.dp)
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                                     ) {
                                         LoadingIndicator(
                                             modifier = Modifier.size(16.dp),
@@ -672,7 +595,8 @@ fun FeedsTab(
                                             disabledContainerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
                                             disabledContentColor = MaterialTheme.colorScheme.primary
                                         ),
-                                        shape = RoundedCornerShape(10.dp)
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                                     ) {
                                         Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(4.dp))
@@ -680,8 +604,9 @@ fun FeedsTab(
                                     }
                                 } else {
                                     FilledTonalButton(
-                                        onClick = { saveArticle(article) },
-                                        shape = RoundedCornerShape(10.dp)
+                                        onClick = { onSaveArticle(article) },
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                                     ) {
                                         Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(4.dp))
@@ -693,55 +618,325 @@ fun FeedsTab(
                     }
                 }
 
-                // Visible Pagination & 'Mehr laden' Control
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 16.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (selectedFeed != null) {
-                            val isLoadingMore = loadingMoreMap[selectedFeed.id] ?: false
-                            val hasNextPage = nextPageUrlMap[selectedFeed.id] != null
-                            if (isLoadingMore) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    LoadingIndicator(modifier = Modifier.size(20.dp))
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Text(stringResource(R.string.feeds_btn_loading_older), style = MaterialTheme.typography.bodyMedium)
-                                }
-                            } else if (displayArticles.size < 90 && (hasNextPage || displayArticles.size >= 10)) {
-                                OutlinedButton(
-                                    onClick = { loadMoreArticles(selectedFeed) },
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(stringResource(R.string.feeds_btn_load_older, displayArticles.size))
-                                }
-                            } else {
-                                Text(
-                                    text = stringResource(R.string.feeds_all_articles_loaded, displayArticles.size),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        } else {
-                            Text(
-                                text = stringResource(R.string.feeds_all_articles_loaded, displayArticles.size),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    FeedPaginationFooter(
+                        selectedFeed = selectedFeed,
+                        articleCount = articles.size,
+                        isLoadingMore = selectedFeed != null && loadingMoreFeedIds.contains(selectedFeed.id),
+                        hasNextPage = selectedFeed != null && nextPageUrlByFeedId[selectedFeed.id] != null,
+                        currentPage = selectedFeed?.let { feedPageByFeedId[it.id] } ?: 1,
+                        searchActive = searchQuery.isNotBlank(),
+                        onLoadMore = { selectedFeed?.let(onLoadMore) }
+                    )
                 }
 
-                // Generous bottom spacer to scroll past the floating bottom toolbar
                 item {
                     Spacer(modifier = Modifier.height(100.dp))
                 }
             }
         }
+    }
+
+    previewArticle?.let { article ->
+        val feedTitle = feedTitleMap[article.feedId] ?: resources.getString(R.string.feeds_default_feed_title)
+        val formattedDate = remember(article.publishedTimestamp, article.pubDate, locale) {
+            when {
+                article.publishedTimestamp > 0L -> {
+                    val date = Date(article.publishedTimestamp)
+                    val relative = DateUtils.formatRelativeOrDate(date)
+                    val medium = DateFormat.getDateInstance(DateFormat.MEDIUM, locale).format(date)
+                    if (relative == medium) relative else "$relative · $medium"
+                }
+                !article.pubDate.isNullOrBlank() -> article.pubDate
+                else -> null
+            }
+        }
+        FeedArticlePreviewSheet(
+            article = article,
+            feedTitle = feedTitle,
+            formattedDate = formattedDate,
+            isSaving = savingArticleLinks.contains(article.link),
+            isAlreadySaved = isArticleSaved(article),
+            onDismiss = onDismissArticlePreview,
+            onOpenOriginal = { onOpenOriginalUrl(article) },
+            onSendToReader = { onSaveArticle(article) }
+        )
+    }
+}
+
+@Composable
+private fun FeedPaginationFooter(
+    selectedFeed: FeedEntity?,
+    articleCount: Int,
+    isLoadingMore: Boolean,
+    hasNextPage: Boolean,
+    currentPage: Int,
+    searchActive: Boolean,
+    onLoadMore: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (selectedFeed != null && !searchActive) {
+            if (isLoadingMore) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    LoadingIndicator(modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(stringResource(R.string.feeds_btn_loading_older), style = MaterialTheme.typography.bodyMedium)
+                }
+            } else if (articleCount < 90 && (hasNextPage || articleCount >= 10 || currentPage > 1)) {
+                OutlinedButton(
+                    onClick = onLoadMore,
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                ) {
+                    Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(stringResource(R.string.feeds_btn_load_older, articleCount))
+                }
+            } else {
+                Text(
+                    text = stringResource(R.string.feeds_all_articles_loaded, articleCount),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            Text(
+                text = stringResource(R.string.feeds_all_articles_loaded, articleCount),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun FeedArticlePreviewSheet(
+    article: FeedArticleEntity,
+    feedTitle: String,
+    formattedDate: String?,
+    isSaving: Boolean,
+    isAlreadySaved: Boolean,
+    onDismiss: () -> Unit,
+    onOpenOriginal: () -> Unit,
+    onSendToReader: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val resources = LocalResources.current
+    val firstImg = remember(article.imageUrlsJoined) { extractFirstImageUrl(article) }
+    val excerptText = remember(article.id, article.description, article.contentHtml, article.title) {
+        extractArticleExcerpt(article)
+    }
+    val canOpenOriginal = remember(article.link) {
+        val normalized = DocumentProcessor.normalizeExternalHttpsUrl(article.link)
+        EInkImageOptimizer.isSafeHttpsExternalUrl(normalized)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        modifier = modifier,
+        sheetState = rememberBottomSheetState(
+            initialValue = SheetValue.Hidden,
+            enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
+        ),
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        dragHandle = { BottomSheetDefaults.DragHandle() }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 32.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                FeedSourceBadge(
+                    sourceTitle = feedTitle,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (!formattedDate.isNullOrBlank()) {
+                    Text(
+                        text = formattedDate,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    text = stringResource(R.string.feeds_reading_time_min_bullet, article.readingTimeMinutes),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Text(
+                text = article.title,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+
+            article.author?.takeIf { it.isNotBlank() }?.let { author ->
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = stringResource(R.string.feeds_by_author, author),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (!firstImg.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(14.dp))
+                RssArticleThumbnail(
+                    imageUrl = firstImg,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(180.dp)
+                        .clip(MaterialTheme.shapes.medium)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Text(
+                text = excerptText.ifBlank { resources.getString(R.string.feed_preview_excerpt_fallback) },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (excerptText.isBlank()) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                }
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onOpenOriginal,
+                    enabled = canOpenOriginal,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.OpenInBrowser,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(stringResource(R.string.feed_preview_open_original))
+                }
+
+                when {
+                    isSaving -> {
+                        FilledTonalButton(
+                            onClick = { },
+                            enabled = false,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp)
+                        ) {
+                            LoadingIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(stringResource(R.string.feeds_btn_saving))
+                        }
+                    }
+                    isAlreadySaved -> {
+                        FilledTonalButton(
+                            onClick = { },
+                            enabled = false,
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                disabledContainerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                                disabledContentColor = MaterialTheme.colorScheme.primary
+                            ),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(stringResource(R.string.feed_preview_already_saved))
+                        }
+                    }
+                    else -> {
+                        Button(
+                            onClick = onSendToReader,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(stringResource(R.string.feed_preview_send_reader))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun extractFirstImageUrl(article: FeedArticleEntity): String? {
+    return article.imageUrlsJoined
+        .split("\n")
+        .map { it.trim() }
+        .firstOrNull { it.isNotBlank() }
+}
+
+private fun extractArticleExcerpt(article: FeedArticleEntity): String {
+    val fromDescription = article.description?.trim().orEmpty()
+    if (fromDescription.isNotBlank()) {
+        return fromDescription
+    }
+    if (article.contentHtml.isBlank()) {
+        return ""
+    }
+    val plainText = try {
+        Jsoup.parseBodyFragment(article.contentHtml).text().trim()
+    } catch (_: Exception) {
+        ""
+    }
+    if (plainText.isBlank() || plainText.equals(article.title.trim(), ignoreCase = true)) {
+        return ""
+    }
+    return if (plainText.length > 600) {
+        plainText.take(600).trimEnd() + "…"
+    } else {
+        plainText
     }
 }
 
@@ -807,22 +1002,23 @@ fun RssArticleThumbnail(
 @Composable
 fun AddFeedDialog(
     onDismiss: () -> Unit,
-    onFeedAdded: (FeedEntity) -> Unit
+    onAddFeed: (url: String, customTitle: String) -> Unit,
+    modifier: Modifier = Modifier,
+    isAdding: Boolean = false
 ) {
-    val context = LocalContext.current
-    val resources = LocalResources.current
-    val app = CrossSendApp.instance
-    val scope = rememberCoroutineScope()
-
     var feedUrl by remember { mutableStateOf("") }
     var customTitle by remember { mutableStateOf("") }
-    var isChecking by remember { mutableStateOf(false) }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isAdding) onDismiss() },
+        modifier = modifier,
         title = { Text(stringResource(R.string.feeds_dialog_add_title), fontWeight = FontWeight.Bold) },
         text = {
-            Column {
+            Column(
+                modifier = Modifier
+                    .imePadding()
+                    .verticalScroll(rememberScrollState())
+            ) {
                 Text(
                     text = stringResource(R.string.feeds_dialog_add_instruction),
                     style = MaterialTheme.typography.bodyMedium,
@@ -834,6 +1030,7 @@ fun AddFeedDialog(
                     onValueChange = { feedUrl = it },
                     label = { Text(stringResource(R.string.feeds_dialog_add_url_label)) },
                     singleLine = true,
+                    enabled = !isAdding,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(8.dp))
@@ -842,56 +1039,18 @@ fun AddFeedDialog(
                     onValueChange = { customTitle = it },
                     label = { Text(stringResource(R.string.feeds_dialog_add_name_label)) },
                     singleLine = true,
+                    enabled = !isAdding,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
         },
         confirmButton = {
             FilledTonalButton(
-                onClick = {
-                    val rawUrl = feedUrl.trim()
-                    if (rawUrl.isBlank()) {
-                        Toast.makeText(context, resources.getString(R.string.feeds_toast_enter_url), Toast.LENGTH_SHORT).show()
-                        return@FilledTonalButton
-                    }
-                    val urlToFetch = if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
-                        "https://$rawUrl"
-                    } else rawUrl
-
-                    isChecking = true
-                    scope.launch {
-                        try {
-                            val parsed = withContext(Dispatchers.IO) {
-                                app.rssFeedParser.fetchFeed(urlToFetch)
-                            }
-                            val finalTitle = if (customTitle.isNotBlank()) customTitle.trim() else parsed.title
-                            val entity = FeedEntity(
-                                title = finalTitle,
-                                url = urlToFetch,
-                                lastFetchedAt = System.currentTimeMillis()
-                            )
-                            val id = withContext(Dispatchers.IO) {
-                                val insertedId = app.database.feedDao().insert(entity)
-                                if (parsed.items.isNotEmpty()) {
-                                    val entities = parsed.items.map { FeedArticleEntity.fromRssItem(insertedId, it) }
-                                    app.database.feedDao().upsertAndPruneFeed(insertedId, entities, System.currentTimeMillis(), 90)
-                                }
-                                insertedId
-                            }
-                            val created = entity.copy(id = id)
-                            onFeedAdded(created)
-                            Toast.makeText(context, resources.getString(R.string.feeds_toast_subscribed_success, finalTitle), Toast.LENGTH_SHORT).show()
-                            onDismiss()
-                        } catch (e: Exception) {
-                            Toast.makeText(context, resources.getString(R.string.feeds_toast_fetch_error, e.message ?: ""), Toast.LENGTH_LONG).show()
-                        } finally {
-                            isChecking = false
-                        }
-                    }
-                },
-                enabled = !isChecking
+                onClick = { onAddFeed(feedUrl, customTitle) },
+                enabled = !isAdding,
+                modifier = Modifier.defaultMinSize(minHeight = 48.dp)
             ) {
-                if (isChecking) {
+                if (isAdding) {
                     LoadingIndicator(modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                 }
@@ -899,7 +1058,11 @@ fun AddFeedDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !isChecking) {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isAdding,
+                modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+            ) {
                 Text(stringResource(R.string.feeds_dialog_btn_cancel))
             }
         }

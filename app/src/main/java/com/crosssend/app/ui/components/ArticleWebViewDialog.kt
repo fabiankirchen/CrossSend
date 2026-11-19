@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -55,31 +56,47 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.edit
 import com.crosssend.app.R
+import com.crosssend.app.converter.DocumentProcessor
 import com.crosssend.app.converter.EInkImageOptimizer
+import com.crosssend.app.converter.WebPageXtchRenderer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import org.json.JSONTokener
 import java.io.ByteArrayInputStream
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun ArticleWebViewDialog(
     initialUrl: String,
+    modifier: Modifier = Modifier,
     initialTitle: String? = null,
     isOriginalLayoutSession: Boolean = false,
     onDismiss: () -> Unit,
     onImportArticle: (html: String, finalUrl: String) -> Unit
 ) {
+    val normalizedInitialUrl = remember(initialUrl) {
+        val trimmed = initialUrl.trim()
+        if (trimmed.startsWith("http://", ignoreCase = true)) {
+            DocumentProcessor.normalizeExternalHttpsUrl(trimmed)
+        } else {
+            trimmed
+        }
+    }
     var webView by remember { mutableStateOf<WebView?>(null) }
-    var currentUrl by remember { mutableStateOf(initialUrl) }
+    var currentUrl by remember(normalizedInitialUrl) { mutableStateOf(normalizedInitialUrl) }
     var pageTitle by remember { mutableStateOf(initialTitle ?: "") }
     var isLoading by remember { mutableStateOf(true) }
     var loadProgress by remember { mutableFloatStateOf(0f) }
     var isImporting by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val prefs = remember(context) { context.getSharedPreferences("crosssend_prefs", Context.MODE_PRIVATE) }
+    val useDarkWebMode = remember(context) {
+        WebPageXtchRenderer.getWebColorScheme(context) == WebPageXtchRenderer.WebColorScheme.DARK
+    }
     var allowThirdPartyCookies by remember {
         mutableStateOf(prefs.getBoolean("allow_third_party_cookies", false))
     }
@@ -101,7 +118,13 @@ fun ArticleWebViewDialog(
             try {
                 CookieManager.getInstance().flush()
             } catch (_: Exception) {}
-            webView?.destroy()
+            webView?.apply {
+                stopLoading()
+                loadUrl("about:blank")
+                clearHistory()
+                removeAllViews()
+                destroy()
+            }
             webView = null
         }
     }
@@ -120,6 +143,7 @@ fun ArticleWebViewDialog(
         )
     ) {
         Scaffold(
+            modifier = modifier.imePadding(),
             topBar = {
                 Column {
                     TopAppBar(
@@ -228,7 +252,7 @@ fun ArticleWebViewDialog(
                             onClick = {
                                 val next = !allowThirdPartyCookies
                                 allowThirdPartyCookies = next
-                                prefs.edit().putBoolean("allow_third_party_cookies", next).apply()
+                                prefs.edit { putBoolean("allow_third_party_cookies", next) }
                                 webView?.let { wv ->
                                     try {
                                         val cm = CookieManager.getInstance()
@@ -264,7 +288,10 @@ fun ArticleWebViewDialog(
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
-                        WebView(ctx).apply {
+                        WebView(WebPageXtchRenderer.createWebViewThemeContext(ctx, useDarkWebMode)).apply {
+                            setBackgroundColor(
+                                if (useDarkWebMode) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+                            )
                             settings.apply {
                                 javaScriptEnabled = true
                                 domStorageEnabled = true
@@ -279,6 +306,7 @@ fun ArticleWebViewDialog(
                                 displayZoomControls = false
                                 cacheMode = WebSettings.LOAD_DEFAULT
                                 userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
+                                WebPageXtchRenderer.applyWebViewColorScheme(this, useDarkWebMode)
                             }
 
                             val cookieManager = CookieManager.getInstance()
@@ -299,17 +327,17 @@ fun ArticleWebViewDialog(
 
                                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                                     val reqUrlStr = request?.url?.toString() ?: return true
-                                    return !EInkImageOptimizer.isSafeExternalImageUrl(reqUrlStr)
+                                    return !EInkImageOptimizer.isSafeHttpsExternalUrl(reqUrlStr)
                                 }
 
                                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                                     val reqUri = request?.url ?: return forbiddenResponse()
-                                    val scheme = reqUri.scheme?.lowercase() ?: return forbiddenResponse()
+                                    val scheme = reqUri.scheme?.lowercase(Locale.ROOT) ?: return forbiddenResponse()
                                     val reqUrlStr = reqUri.toString()
                                     if (scheme == "data" || scheme == "blob" || reqUrlStr == "about:blank") {
                                         return null
                                     }
-                                    if (!EInkImageOptimizer.isSafeExternalImageUrl(reqUrlStr)) {
+                                    if (!EInkImageOptimizer.isSafeHttpsExternalUrl(reqUrlStr)) {
                                         return forbiddenResponse()
                                     }
                                     val host = reqUri.host ?: return forbiddenResponse()
@@ -352,8 +380,8 @@ fun ArticleWebViewDialog(
                                 }
                             }
 
-                            if (EInkImageOptimizer.isSafeExternalImageUrl(initialUrl)) {
-                                loadUrl(initialUrl)
+                            if (EInkImageOptimizer.isSafeHttpsExternalUrl(normalizedInitialUrl)) {
+                                loadUrl(normalizedInitialUrl)
                             }
                             webView = this
                         }

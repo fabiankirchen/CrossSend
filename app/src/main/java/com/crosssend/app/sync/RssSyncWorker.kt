@@ -13,6 +13,11 @@ import com.crosssend.app.CrossSendApp
 import com.crosssend.app.data.local.FeedArticleEntity
 import com.crosssend.app.data.local.FeedEntity
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.TimeUnit
 
 class RssSyncWorker(
@@ -43,13 +48,20 @@ class RssSyncWorker(
 
         suspend fun syncAllFeeds(app: CrossSendApp) {
             val feeds = app.database.feedDao().getAllFeedsList()
-            for (feed in feeds) {
-                try {
-                    syncFeed(app, feed)
-                } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                    Log.e(TAG, "Failed to sync feed ${feed.title} (${feed.url})", e)
-                }
+            val semaphore = Semaphore(3)
+            coroutineScope {
+                feeds.map { feed ->
+                    async {
+                        semaphore.withPermit {
+                            try {
+                                syncFeed(app, feed)
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                Log.e(TAG, "Failed to sync feed ${feed.title} (${feed.url})", e)
+                            }
+                        }
+                    }
+                }.awaitAll()
             }
         }
 

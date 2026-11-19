@@ -7,6 +7,7 @@ import android.util.Xml
 import androidx.core.content.edit
 import com.crosssend.app.converter.EInkImageOptimizer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
@@ -136,14 +137,20 @@ class WebDavClient(
         }
     }
 
-    private var baseUrl: String = context?.getSharedPreferences("crosspoint_prefs", Context.MODE_PRIVATE)
-        ?.getString("base_url", initialBaseUrl) ?: initialBaseUrl
+    @Volatile
+    private var baseUrl: String = (
+        context?.getSharedPreferences("crosspoint_prefs", Context.MODE_PRIVATE)
+            ?.getString("base_url", initialBaseUrl) ?: initialBaseUrl
+        ).let { stored ->
+            LocalDeviceHostValidator.normalizeLocalDeviceUrl(stored) ?: "http://crosspoint.local"
+        }
 
     private val baseClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
+        .addInterceptor(LocalDeviceHostValidator.createLocalDeviceCleartextGuardInterceptor())
         .build()
 
     @Volatile
@@ -188,7 +195,13 @@ class WebDavClient(
                                 return try {
                                     apNet.getAllByName(hostname).toList()
                                 } catch (_: Exception) {
-                                    listOf(java.net.InetAddress.getByName(hostname))
+                                    val localAddrs = java.net.InetAddress.getAllByName(hostname).filter { addr ->
+                                        LocalDeviceHostValidator.isAllowedLocalAddress(addr)
+                                    }
+                                    if (localAddrs.isEmpty()) {
+                                        throw UnknownHostException("Blocked non-local fallback DNS resolution for AP host: $hostname")
+                                    }
+                                    localAddrs
                                 }
                             }
                         })
@@ -223,17 +236,18 @@ class WebDavClient(
         }
     }
 
-    fun updateBaseUrl(newBaseUrl: String) {
-        val clean = newBaseUrl.trim().trimEnd('/')
-        this.baseUrl = if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
-            "http://$clean"
-        } else {
-            clean
+    fun updateBaseUrl(newBaseUrl: String): Boolean {
+        val normalized = LocalDeviceHostValidator.normalizeLocalDeviceUrl(newBaseUrl)
+        if (normalized == null) {
+            Log.w(tag, "Rejected invalid or non-local WebDAV base URL")
+            return false
         }
+        this.baseUrl = normalized
         context?.getSharedPreferences("crosspoint_prefs", Context.MODE_PRIVATE)
             ?.edit {
-                putString("base_url", this@WebDavClient.baseUrl)
+                putString("base_url", normalized)
             }
+        return true
     }
 
     fun getBaseUrl(): String = baseUrl
@@ -346,7 +360,7 @@ class WebDavClient(
                             )
                         }
                         resolveWifiManager()?.onTransferProgress()
-                        Log.d(tag, "Native /api/files returned ${items.size} items for $cleanPath")
+                        Log.d(tag, "Native /api/files returned ${items.size} items")
                         return@withContext Result.success(items)
                     }
                 }
@@ -382,7 +396,7 @@ class WebDavClient(
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful && response.code != 207) {
                     Log.e(tag, "PROPFIND failed with HTTP ${response.code}")
-                    return@withContext Result.failure(Exception("HTTP ${response.code} von $baseUrl"))
+                    return@withContext Result.failure(Exception("HTTP ${response.code} ($baseUrl)"))
                 }
 
                 val xmlBody = response.body?.let { EInkImageOptimizer.readBoundedString(it, 5L * 1024 * 1024) }
@@ -391,7 +405,7 @@ class WebDavClient(
                 Result.success(parsePropfindXml(xmlBody, cleanPath))
             }
         } catch (e: Exception) {
-            Log.e(tag, "Error during PROPFIND on $url", e)
+            Log.e(tag, "Error during PROPFIND", e)
             notifyIfUnreachable(e)
             lastException?.let { notifyIfUnreachable(it) }
             Result.failure(lastException ?: e)
@@ -402,7 +416,7 @@ class WebDavClient(
         return listDirectoryResult(sanitizeRemotePath(remotePath)).getOrDefault(emptyList())
     }
 
-    private fun uploadFileViaWebSocket(
+    private suspend fun uploadFileViaWebSocket(
         localFile: File,
         cleanPath: String,
         onProgress: ((Float) -> Unit)? = null
@@ -461,7 +475,7 @@ class WebDavClient(
                         } catch (_: Exception) {}
                     }
                     is WsServerFrame.Unknown -> {
-                        Log.d(tag, "Ignoring unknown WS frame: ${frame.raw}")
+                        Log.d(tag, "Ignoring unknown WS frame (length=${frame.raw.length})")
                     }
                 }
             }
@@ -519,7 +533,7 @@ class WebDavClient(
                         if (wsFailed.get() || wsClosed.get()) {
                             throw IOException(wsErrorMsg.get() ?: "WebSocket closed while draining queue")
                         }
-                        Thread.sleep(10)
+                        delay(10)
                     }
                     if (!webSocket.send(buffer.toByteString(0, read))) {
                         throw IOException("WebSocket send returned false")
@@ -534,7 +548,7 @@ class WebDavClient(
                 return false
             }
 
-            Log.d(tag, "WebSocket upload of $targetFileName to $wsUrl succeeded")
+            Log.d(tag, "WebSocket upload succeeded")
             return true
         } catch (e: Exception) {
             Log.d(tag, "WS upload failed (${e.message}), falling back to HTTP /upload")
@@ -604,7 +618,7 @@ class WebDavClient(
                 client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
                         wifiMgr?.onTransferProgress()
-                        Log.d(tag, "Native upload of $uploadFileName to $uploadUrl succeeded")
+                        Log.d(tag, "Native /upload succeeded")
                         return@withContext true
                     }
                 }
@@ -658,11 +672,11 @@ class WebDavClient(
                     if (success) {
                         wifiMgr?.onTransferProgress()
                     }
-                    Log.d(tag, "PUT $url returned ${response.code}, success: $success")
+                    Log.d(tag, "WebDAV PUT returned ${response.code}, success: $success")
                     success
                 }
             } catch (e: Exception) {
-                Log.e(tag, "Failed to upload ${localFile.name} to $url", e)
+                Log.e(tag, "Failed to upload file via WebDAV PUT", e)
                 notifyIfUnreachable(e)
                 nativeException?.let { notifyIfUnreachable(it) }
                 false
@@ -716,7 +730,7 @@ class WebDavClient(
                             }
                         }
                         resolveWifiManager()?.onTransferProgress()
-                        Log.d(tag, "Native download of $cleanPath succeeded")
+                        Log.d(tag, "Native /download succeeded")
                         return@withContext true
                     }
                 }
@@ -736,7 +750,7 @@ class WebDavClient(
             val request = Request.Builder().url(url).get().build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    Log.e(tag, "GET $url failed with HTTP ${response.code}")
+                    Log.e(tag, "WebDAV GET failed with HTTP ${response.code}")
                     return@withContext false
                 }
 
@@ -766,12 +780,12 @@ class WebDavClient(
                     }
                 }
                 resolveWifiManager()?.onTransferProgress()
-                Log.d(tag, "Downloaded $cleanPath to ${destinationFile.absolutePath}")
+                Log.d(tag, "WebDAV GET download succeeded")
                 true
             }
         } catch (e: Exception) {
             try { destinationFile.delete() } catch (_: Exception) {}
-            Log.e(tag, "Failed to download $cleanPath from $url", e)
+            Log.e(tag, "Failed to download file via WebDAV GET", e)
             notifyIfUnreachable(e)
             nativeException?.let { notifyIfUnreachable(it) }
             false
@@ -796,7 +810,7 @@ class WebDavClient(
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     resolveWifiManager()?.onTransferProgress()
-                    Log.d(tag, "Native delete of $cleanPath succeeded")
+                    Log.d(tag, "Native /delete succeeded")
                     return@withContext true
                 }
             }
@@ -817,11 +831,11 @@ class WebDavClient(
                 if (success) {
                     resolveWifiManager()?.onTransferProgress()
                 }
-                Log.d(tag, "DELETE $url returned ${response.code}, success: $success")
+                Log.d(tag, "WebDAV DELETE returned ${response.code}, success: $success")
                 success
             }
         } catch (e: Exception) {
-            Log.e(tag, "Failed to delete $url", e)
+            Log.e(tag, "Failed to delete remote file via WebDAV DELETE", e)
             notifyIfUnreachable(e)
             nativeException?.let { notifyIfUnreachable(it) }
             false

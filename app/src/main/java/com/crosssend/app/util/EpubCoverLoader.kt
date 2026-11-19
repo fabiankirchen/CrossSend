@@ -12,7 +12,17 @@ import java.io.FileOutputStream
 import java.util.zip.ZipFile
 
 object EpubCoverLoader {
-    private val memoryCache = LruCache<String, Bitmap>(40)
+    private val memoryCache = object : LruCache<String, Bitmap>(
+        minOf((Runtime.getRuntime().maxMemory() / 1024L / 8L).toInt(), 24 * 1024).coerceAtLeast(4 * 1024)
+    ) {
+        override fun sizeOf(key: String, value: Bitmap): Int {
+            return (value.allocationByteCount / 1024).coerceAtLeast(1)
+        }
+    }
+
+    fun clearMemoryCache() {
+        memoryCache.evictAll()
+    }
 
     private fun safeCoverFileName(docFileName: String): String {
         return File(docFileName).name.ifBlank { "cover" }
@@ -23,6 +33,16 @@ object EpubCoverLoader {
         memoryCache.snapshot().keys
             .filter { it.endsWith(suffix) }
             .forEach { memoryCache.remove(it) }
+    }
+
+    private fun cleanupStaleDiskCacheFiles(cacheDir: File, documentId: Long, currentFileName: String) {
+        val prefix = "cover_${documentId}_"
+        cacheDir.listFiles { file ->
+            val name = file.name
+            name.startsWith(prefix) && name.endsWith(".jpg") && name != currentFileName
+        }?.forEach { staleFile ->
+            staleFile.delete()
+        }
     }
 
     fun saveColorCoverForDocument(context: Context, docFileName: String, sourceColorFile: File?) {
@@ -170,9 +190,13 @@ object EpubCoverLoader {
         val diskCacheKey = "cover_${document.id}_${epubFile.lastModified()}"
         val cacheDir = File(context.cacheDir, "covers").apply { mkdirs() }
         val diskCacheFile = File(cacheDir, "$diskCacheKey.jpg")
+        cleanupStaleDiskCacheFiles(cacheDir, document.id, diskCacheFile.name)
 
         if (diskCacheFile.exists()) {
-            val cachedBmp = BitmapFactory.decodeFile(diskCacheFile.absolutePath)
+            val cachedOpts = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            val cachedBmp = BitmapFactory.decodeFile(diskCacheFile.absolutePath, cachedOpts)
             if (cachedBmp != null) {
                 memoryCache.put(cacheKey, cachedBmp)
                 return@withContext cachedBmp

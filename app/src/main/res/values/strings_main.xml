@@ -46,6 +46,7 @@
     <string name="main_action_cancel">Cancel</string>
     <string name="main_dialog_add_url_title">Add Web Article</string>
     <string name="main_dialog_add_url_desc">Enter the URL of the article. It will be optimized for E-Ink as EPUB or Original Layout (XTCH):</string>
+    <string name="main_label_url_hint">https://…</string>
     <string name="main_button_in_browser">In Browser</string>
     <string name="main_button_add">Add</string>
     <string name="main_dialog_add_note_title">Insert Note / Text</string>
@@ -190,4 +191,26 @@
     <string name="sync_status_syncing_manifest">Syncing library manifest…</string>
     <string name="sync_status_completed">Sync completed</string>
     <string name="sync_error_unknown">Unknown synchronization error.</string>
+
+    <!-- Sort & Validation -->
+    <string name="error_invalid_local_device_url">Invalid local device address. Enter a local IP (e.g. 192.168.1.50) or .local host.</string>
+    <string name="main_sort_order">Sort order</string>
+    <string name="main_sort_newest">Newest first</string>
+    <string name="main_sort_oldest">Oldest first</string>
+    <string name="main_sort_title">Title (A–Z)</string>
+
+    <!-- Browser Sessions, Diagnostics & App Version -->
+    <string name="settings_section_browser_diagnostics">Browser Sessions &amp; Diagnostics</string>
+    <string name="settings_clear_cookies">Clear Website Logins &amp; Cookies</string>
+    <string name="settings_clear_cookies_desc">Sign out of paywalled or logged-in sites saved in the internal browser.</string>
+    <string name="settings_cookies_cleared">Browser cookies cleared</string>
+    <string name="settings_debug_dumps_title">Capture Conversion Debug Dumps</string>
+    <string name="settings_debug_dumps_desc">Store temporary HTML/XTCH logs in app cache for troubleshooting.</string>
+    <string name="settings_clear_debug_dumps">Clear Debug Dumps</string>
+    <string name="settings_debug_dumps_cleared">Debug dumps deleted</string>
+    <string name="settings_app_version_label">App Version</string>
+    <string name="settings_xtch_color_scheme">Website color scheme</string>
+    <string name="settings_xtch_color_scheme_desc">Choose whether web pages are rendered in Light or Dark mode.</string>
+    <string name="settings_xtch_color_scheme_light">Light</string>
+    <string name="settings_xtch_color_scheme_dark">Dark</string>
 </resources>

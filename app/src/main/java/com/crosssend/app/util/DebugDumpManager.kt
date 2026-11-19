@@ -2,6 +2,7 @@ package com.crosssend.app.util
 
 import android.content.Context
 import android.util.Log
+import androidx.core.content.edit
 import com.crosssend.app.converter.ExtractedArticle
 import java.io.File
 import java.text.SimpleDateFormat
@@ -28,9 +29,9 @@ object DebugDumpManager {
 
     fun setDebugDumpEnabled(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(PREF_DEBUG_ENABLED, enabled)
-            .apply()
+            .edit {
+                putBoolean(PREF_DEBUG_ENABLED, enabled)
+            }
     }
 
     fun clearAllDumps(context: Context): Int {

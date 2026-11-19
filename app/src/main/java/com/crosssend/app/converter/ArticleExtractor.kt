@@ -7,10 +7,10 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import android.webkit.CookieManager
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.URL
 import java.util.Date
+import java.util.Locale
 
 data class ExtractedArticle(
     val title: String,
@@ -38,51 +38,19 @@ class PaywallOrLoginRequiredException(val url: String, val articleTitle: String?
 class ArticleExtractor {
     private val tag = "ArticleExtractor"
 
-    private val sameOriginCookieInterceptor = okhttp3.Interceptor { chain ->
-        val req = chain.request()
-        val reqBuilder = req.newBuilder().removeHeader("Cookie")
-        try {
-            val storedCookies = CookieManager.getInstance().getCookie(req.url.toString())
-            if (!storedCookies.isNullOrBlank()) {
-                reqBuilder.header("Cookie", storedCookies)
-            }
-        } catch (_: Throwable) {}
-        chain.proceed(reqBuilder.build())
-    }
-
-    private fun getHttpClient(): OkHttpClient {
-        return try {
-            com.crosssend.app.CrossSendApp.instance.wifiManager.getInternetOkHttpClientBuilder()
-                .followRedirects(true)
-                .followSslRedirects(true)
-                .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(25, java.util.concurrent.TimeUnit.SECONDS)
-                .addInterceptor(EInkImageOptimizer.ssrfSafeInterceptor)
-                .addNetworkInterceptor(EInkImageOptimizer.ssrfSafeInterceptor)
-                .addNetworkInterceptor(sameOriginCookieInterceptor)
-                .build()
-        } catch (_: Exception) {
-            OkHttpClient.Builder()
-                .dns(EInkImageOptimizer.ssrfSafeDns)
-                .followRedirects(true)
-                .followSslRedirects(true)
-                .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(25, java.util.concurrent.TimeUnit.SECONDS)
-                .addInterceptor(EInkImageOptimizer.httpsOnlyInterceptor)
-                .addNetworkInterceptor(EInkImageOptimizer.httpsOnlyInterceptor)
-                .addInterceptor(EInkImageOptimizer.ssrfSafeInterceptor)
-                .addNetworkInterceptor(EInkImageOptimizer.ssrfSafeInterceptor)
-                .addNetworkInterceptor(sameOriginCookieInterceptor)
-                .build()
-        }
-    }
+    private fun getHttpClient() = EInkImageOptimizer.getSafeInternetClient(
+        connectTimeoutSeconds = 20,
+        readTimeoutSeconds = 25,
+        followRedirects = true,
+        extraNetworkInterceptor = sameOriginCookieInterceptor
+    )
 
     suspend fun extractFromUrl(url: String): ExtractedArticle = withContext(Dispatchers.IO) {
         extractFromUrlWithRaw(url).first
     }
 
     suspend fun extractFromUrlWithRaw(url: String): Pair<ExtractedArticle, String> = withContext(Dispatchers.IO) {
-        require(EInkImageOptimizer.isSafeExternalImageUrl(url)) {
+        require(EInkImageOptimizer.isSafeHttpsExternalUrl(url)) {
             if (java.util.Locale.getDefault().language == "de") {
                 "Ungültige oder interne URL blockiert."
             } else {
@@ -149,8 +117,7 @@ class ArticleExtractor {
             it.absUrl("src").ifBlank { it.attr("src") }.trim()
         }
         val contentIframeUrl = iframeCandidates.firstOrNull { iframeUrl ->
-            (iframeUrl.startsWith("http://") || iframeUrl.startsWith("https://")) &&
-            EInkImageOptimizer.isSafeExternalImageUrl(iframeUrl) &&
+            EInkImageOptimizer.isSafeHttpsExternalUrl(iframeUrl) &&
             nonContentHosts.none { iframeUrl.contains(it, ignoreCase = true) }
         } ?: return@withContext currentArticle
 
@@ -752,24 +719,20 @@ class ArticleExtractor {
      */
     private fun sanitizeInlineFormatting(element: Element): String {
         val allowedTags = setOf("strong", "b", "em", "i", "code", "a", "del", "s", "mark", "sub", "sup")
+        val uriAttributes = setOf("href", "src", "xlink:href", "formaction", "action", "data", "srcdoc")
         val clone = element.clone()
         clone.select("img, script, style, noscript, iframe, object, embed, form, input, button").remove()
 
         for (child in clone.allElements) {
             if (child == clone) continue
+            val tagLower = child.tagName().lowercase(Locale.ROOT)
             val attrsToRemove = mutableListOf<String>()
             for (attr in child.attributes()) {
-                val keyLower = attr.key.lowercase()
+                val keyLower = attr.key.lowercase(Locale.ROOT)
                 if (keyLower == "style" || keyLower == "class" || keyLower == "id" || keyLower.startsWith("on")) {
                     attrsToRemove.add(attr.key)
-                } else if (keyLower == "href" || keyLower == "src" || keyLower == "xlink:href") {
-                    val normalizedUri = attr.value
-                        .replace(Regex("[\\u0000-\\u0020]+"), "")
-                        .lowercase()
-                    if (normalizedUri.startsWith("javascript:") ||
-                        normalizedUri.startsWith("vbscript:") ||
-                        normalizedUri.startsWith("data:")
-                    ) {
+                } else if (keyLower in uriAttributes) {
+                    if (tagLower != "a" || keyLower != "href" || !EInkImageOptimizer.isSafeHtmlUri(attr.value, allowRelative = true)) {
                         attrsToRemove.add(attr.key)
                     }
                 }
@@ -777,7 +740,7 @@ class ArticleExtractor {
             for (attrKey in attrsToRemove) {
                 child.removeAttr(attrKey)
             }
-            if (child.tagName().lowercase() !in allowedTags) {
+            if (tagLower !in allowedTags) {
                 child.unwrap()
             }
         }
@@ -938,6 +901,18 @@ class ArticleExtractor {
     }
 
     companion object {
+        private val sameOriginCookieInterceptor = okhttp3.Interceptor { chain ->
+            val req = chain.request()
+            val reqBuilder = req.newBuilder().removeHeader("Cookie")
+            try {
+                val storedCookies = CookieManager.getInstance().getCookie(req.url.toString())
+                if (!storedCookies.isNullOrBlank()) {
+                    reqBuilder.header("Cookie", storedCookies)
+                }
+            } catch (_: Throwable) {}
+            chain.proceed(reqBuilder.build())
+        }
+
         val GENERIC_TITLES = setOf(
             "web", "webversion", "web-version", "web version", "web-artikel", "web artikel",
             "online", "online-version", "onlineversion", "online version", "im web", "im web lesen",
@@ -1024,7 +999,8 @@ class ArticleExtractor {
     }
 
     fun sanitizeDocumentTitle(candidate: String?): String {
-        if (candidate.isNullOrBlank()) return "Notiz"
+        val defaultTitle = if (java.util.Locale.getDefault().language == "de") "Notiz" else "Note"
+        if (candidate.isNullOrBlank()) return defaultTitle
         var clean = cleanTitle(candidate)
         if (clean.length > 100 || clean.split("\\s+".toRegex()).size > 15) {
             val firstSentence = clean.split(Regex("(?<=[.!?])\\s+|\\n+")).firstOrNull { it.isNotBlank() } ?: clean
@@ -1034,7 +1010,7 @@ class ArticleExtractor {
                 clean.take(75).substringBeforeLast(" ", clean.take(75)).trimEnd('.', ' ', ':', '-')
             }
         }
-        return clean.ifBlank { "Notiz" }
+        return clean.ifBlank { defaultTitle }
     }
 
     fun isGenericTitle(title: String?): Boolean {

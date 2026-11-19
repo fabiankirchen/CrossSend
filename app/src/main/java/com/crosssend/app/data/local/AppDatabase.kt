@@ -43,7 +43,7 @@ class Converters {
         FeedArticleEntity::class,
         DomainPreferenceEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -119,6 +119,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_documents_syncStatus` ON `documents` (`syncStatus`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_documents_sourceUrl` ON `documents` (`sourceUrl`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_documents_fileName` ON `documents` (`fileName`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_documents_remotePath` ON `documents` (`remotePath`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_documents_type` ON `documents` (`type`)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -126,7 +136,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "crosssend_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                 INSTANCE = instance
                 instance

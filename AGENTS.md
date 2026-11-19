@@ -27,7 +27,7 @@ Source of truth: [app/build.gradle.kts](app/build.gradle.kts), [gradle.propertie
 Set `JAVA_HOME` explicitly when running Gradle from CLI:
 
 ```bash
-JAVA_HOME=/opt/homebrew/Cellar/openjdk@21/21.0.12.1/libexec/openjdk.jdk/Contents/Home \
+JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
   ./gradlew testReleaseUnitTest lintRelease assembleRelease -PallowDebugReleaseSigning=true
 ```
 

@@ -3,11 +3,9 @@ package com.crosssend.app.ui.components
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,7 +43,6 @@ import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.BottomSheetDefaults
@@ -71,7 +68,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -82,7 +78,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -97,9 +92,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.net.toUri
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.crosssend.app.CrossSendApp
 import com.crosssend.app.R
 import com.crosssend.app.WebArticleLoginRequest
+import com.crosssend.app.converter.DocumentProcessor
 import com.crosssend.app.converter.EInkImageOptimizer
 import com.crosssend.app.converter.XtcBuilder
 import com.crosssend.app.converter.XtchInfo
@@ -123,6 +121,7 @@ fun DocumentPreviewDialog(
     document: DocumentEntity,
     onDismiss: () -> Unit,
     onDelete: (DocumentEntity) -> Unit,
+    modifier: Modifier = Modifier,
     onResendFromArchive: ((DocumentEntity) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -131,9 +130,9 @@ fun DocumentPreviewDialog(
     val app = CrossSendApp.instance
     val observedDocument by remember(document.id) {
         app.database.documentDao().observeById(document.id)
-    }.collectAsState(initial = document)
+    }.collectAsStateWithLifecycle(initialValue = document)
     val liveDocument = observedDocument ?: document
-    val rerenderingDocId by app.rerenderingDocId.collectAsState()
+    val rerenderingDocId by app.rerenderingDocId.collectAsStateWithLifecycle()
     var coverBitmap by remember(liveDocument.id) { mutableStateOf<Bitmap?>(null) }
     var previewText by remember(liveDocument.id) { mutableStateOf<String?>(null) }
     var isLoadingText by remember(liveDocument.id) { mutableStateOf(true) }
@@ -178,6 +177,7 @@ fun DocumentPreviewDialog(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        modifier = modifier,
         sheetState = rememberBottomSheetState(
             initialValue = SheetValue.Hidden,
             enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
@@ -344,12 +344,17 @@ fun DocumentPreviewDialog(
                         // Metadata chips / info
                         val displayDate = com.crosssend.app.util.DateUtils.parseFilenameTimestamp(liveDocument.fileName)
                             ?: Date(liveDocument.createdAt)
+                        val locale = LocalLocale.current.platformLocale
                         val dateFormatted = java.text.DateFormat.getDateTimeInstance(
                             java.text.DateFormat.MEDIUM,
                             java.text.DateFormat.SHORT,
-                            LocalLocale.current.platformLocale
+                            locale
                         ).format(displayDate)
-                        val sizeText = if (liveDocument.syncStatus == SyncStatus.ARCHIVED) stringResource(R.string.card_status_archived) else formatFileSize(liveDocument.fileSizeBytes)
+                        val sizeText = if (liveDocument.syncStatus == SyncStatus.ARCHIVED) {
+                            stringResource(R.string.card_status_archived)
+                        } else {
+                            formatFileSize(liveDocument.fileSizeBytes, locale)
+                        }
                         Text(
                             text = "$dateFormatted • $sizeText",
                             style = MaterialTheme.typography.labelSmall,
@@ -440,12 +445,18 @@ fun DocumentPreviewDialog(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 // Render Mode Selector (Reading View EPUB vs Original Layout XTCH)
-                val canSwitchMode = liveDocument.type == DocumentType.ARTICLE &&
+                val safeSourceUrl = liveDocument.sourceUrl?.trim()?.let { raw ->
+                    if (raw.startsWith("http://", ignoreCase = true)) {
+                        DocumentProcessor.normalizeExternalHttpsUrl(raw)
+                    } else {
+                        raw
+                    }
+                }?.takeIf { EInkImageOptimizer.isSafeHttpsExternalUrl(it) }
+                if (liveDocument.type == DocumentType.ARTICLE &&
                     liveDocument.syncStatus != SyncStatus.ARCHIVED &&
-                    !liveDocument.sourceUrl.isNullOrBlank() &&
-                    EInkImageOptimizer.isSafeExternalImageUrl(liveDocument.sourceUrl!!)
-                if (canSwitchMode) {
-                    val domainHost = DomainHostUtils.normalizeHost(liveDocument.sourceUrl) ?: ""
+                    safeSourceUrl != null
+                ) {
+                    val domainHost = DomainHostUtils.normalizeHost(safeSourceUrl) ?: ""
                     val crosspointPrefs = remember { context.getSharedPreferences("crosspoint_prefs", Context.MODE_PRIVATE) }
                     val profile = remember {
                         EInkImageOptimizer.Companion.CrossPointHardwareProfile.fromModelString(
@@ -562,7 +573,7 @@ fun DocumentPreviewDialog(
                             enabled = !isBusyRendering,
                             onClick = {
                                 app.pendingWebViewRequest.value = WebArticleLoginRequest(
-                                    url = liveDocument.sourceUrl!!,
+                                    url = safeSourceUrl,
                                     title = liveDocument.title,
                                     rerenderOriginalLayoutDocId = if (liveDocument.renderMode == RenderMode.ORIGINAL_LAYOUT) liveDocument.id else null
                                 )
@@ -591,7 +602,7 @@ fun DocumentPreviewDialog(
                                     app.applicationScope.launch {
                                         try {
                                             val ok = app.documentProcessor.processWebUrlOriginalLayout(
-                                                url = liveDocument.sourceUrl!!,
+                                                url = safeSourceUrl,
                                                 fallbackTitle = liveDocument.title,
                                                 author = liveDocument.author,
                                                 existingDoc = liveDocument
@@ -685,7 +696,8 @@ fun DocumentPreviewDialog(
                 }
 
                 // Source URL link if present (clickable to open in browser)
-                if (!liveDocument.sourceUrl.isNullOrBlank()) {
+                val sourceUrl = liveDocument.sourceUrl
+                if (!sourceUrl.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(10.dp))
                     Row(
                         modifier = Modifier
@@ -693,7 +705,7 @@ fun DocumentPreviewDialog(
                             .clip(RoundedCornerShape(8.dp))
                             .clickable {
                                 try {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(liveDocument.sourceUrl))
+                                    val intent = Intent(Intent.ACTION_VIEW, sourceUrl.toUri())
                                     context.startActivity(intent)
                                 } catch (_: Exception) {}
                             }
@@ -708,7 +720,7 @@ fun DocumentPreviewDialog(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = stringResource(R.string.preview_source_format, liveDocument.sourceUrl!!),
+                            text = stringResource(R.string.preview_source_format, sourceUrl),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             maxLines = 1,
@@ -738,7 +750,8 @@ private fun XtchPagePreviewSection(
     xtchPath: String,
     fileModified: Long,
     xtchInfo: XtchInfo,
-    onOpenFullscreen: (Int) -> Unit
+    onOpenFullscreen: (Int) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
     val pagerState = rememberPagerState(
@@ -752,7 +765,7 @@ private fun XtchPagePreviewSection(
     }
     val aspectRatio = remember(xtchInfo.width, xtchInfo.height) { xtchInfo.aspectRatio() }
 
-    Column(modifier = Modifier.fillMaxWidth()) {
+    Column(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -777,8 +790,7 @@ private fun XtchPagePreviewSection(
                     onClick = {
                         val target = (pagerState.currentPage - 1).coerceAtLeast(0)
                         scope.launch { pagerState.animateScrollToPage(target) }
-                    },
-                    modifier = Modifier.size(32.dp)
+                    }
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
@@ -791,8 +803,7 @@ private fun XtchPagePreviewSection(
                     onClick = {
                         val target = (pagerState.currentPage + 1).coerceAtMost(xtchInfo.pageCount - 1)
                         scope.launch { pagerState.animateScrollToPage(target) }
-                    },
-                    modifier = Modifier.size(32.dp)
+                    }
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -801,8 +812,7 @@ private fun XtchPagePreviewSection(
                     )
                 }
                 FilledTonalIconButton(
-                    onClick = { onOpenFullscreen(pagerState.currentPage) },
-                    modifier = Modifier.size(32.dp)
+                    onClick = { onOpenFullscreen(pagerState.currentPage) }
                 ) {
                     Icon(
                         imageVector = Icons.Default.Fullscreen,
@@ -834,7 +844,7 @@ private fun XtchPagePreviewSection(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.surfaceContainerLowest,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                         shadowElevation = 2.dp,
                         modifier = Modifier
@@ -861,7 +871,8 @@ private fun XtchFullscreenViewerDialog(
     fileModified: Long,
     xtchInfo: XtchInfo,
     initialPage: Int,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
     val pagerState = rememberPagerState(
@@ -878,8 +889,8 @@ private fun XtchFullscreenViewerDialog(
         )
     ) {
         Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = Color.Black.copy(alpha = 0.94f)
+            modifier = modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.94f)
         ) {
             Box(
                 modifier = Modifier
@@ -899,7 +910,7 @@ private fun XtchFullscreenViewerDialog(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.surfaceContainerLowest,
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1014,11 +1025,10 @@ private fun XtchInfo.aspectRatio(): Float {
     return if (width > 0 && height > 0) width.toFloat() / height.toFloat() else 480f / 800f
 }
 
-private fun formatFileSize(bytes: Long): String {
+private fun formatFileSize(bytes: Long, locale: Locale): String {
     if (bytes <= 0) return "0 B"
     val kb = bytes / 1024.0
     val mb = kb / 1024.0
-    val locale = Locale.getDefault()
     return if (mb >= 1.0) {
         String.format(locale, "%.1f MB", mb)
     } else {

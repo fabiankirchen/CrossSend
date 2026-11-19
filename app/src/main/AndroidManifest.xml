@@ -6,25 +6,10 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-
-    <!-- Android 13+ (API 33+) Nearby Wi-Fi Devices -->
-    <uses-permission
-        android:name="android.permission.NEARBY_WIFI_DEVICES"
-        android:usesPermissionFlags="neverForLocation"
-        tools:targetApi="33" />
 
     <!-- Android 17+ (API 37+) Local Network Access -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
-
-    <!-- Legacy Location permissions for Wi-Fi scanning on Android < 13 -->
-    <uses-permission
-        android:name="android.permission.ACCESS_COARSE_LOCATION"
-        android:maxSdkVersion="32" />
-    <uses-permission
-        android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="32" />
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -60,7 +45,7 @@
             android:name=".share.ShareHandlerActivity"
             android:exported="true"
             android:label="@string/share_target_title"
-            android:theme="@android:style/Theme.NoDisplay">
+            android:theme="@style/Theme.CrossSend.Transparent">
 
             <!-- Handle URLs and plain text from browsers or apps -->
             <intent-filter>
@@ -135,11 +120,18 @@
                 <data android:mimeType="text/xml" />
             </intent-filter>
 
-            <!-- Handle wildcard file shares from downloads or file managers -->
+            <!-- Handle MOBI / Kindle ebook files -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="*/*" />
+                <data android:mimeType="application/x-mobipocket-ebook" />
+            </intent-filter>
+
+            <!-- Handle images for E-Ink sleep screens -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
             </intent-filter>
 
             <!-- Handle Open with / View for books (ACSM, EPUB, PDF) -->
@@ -172,9 +164,15 @@
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/x-mobipocket-ebook" />
                 <data android:mimeType="application/vnd.adobe.adept+xml" />
+                <data android:mimeType="application/x-adobe-adept+xml" />
+                <data android:mimeType="application/acsm" />
+                <data android:mimeType="application/xml" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="image/*" />
                 <data android:mimeType="text/*" />
-                <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
 

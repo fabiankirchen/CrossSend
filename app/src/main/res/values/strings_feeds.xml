@@ -68,6 +68,11 @@
     <string name="feeds_error_unsafe_url">Invalid or internal feed URL blocked.</string>
     <string name="feeds_error_http">Could not fetch feed: HTTP %1$d</string>
     <string name="feeds_error_empty">Feed response is empty.</string>
+    <string name="feed_preview_excerpt_fallback">No preview excerpt available for this article.</string>
+    <string name="feed_preview_open_original">Open Original</string>
+    <string name="feed_preview_send_reader">Send to CrossPoint</string>
+    <string name="feed_preview_already_saved">Already in Library</string>
+    <string name="feed_clear_search">Clear search</string>
 
     <!-- Document Processor & Notifications -->
     <string name="proc_error_internal_access_denied">Access to internal app files denied.</string>

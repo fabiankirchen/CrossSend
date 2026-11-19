@@ -43,6 +43,9 @@ interface DocumentDao {
     @Query("SELECT * FROM documents")
     suspend fun getAllDocuments(): List<DocumentEntity>
 
+    @Query("SELECT * FROM documents WHERE LOWER(fileName) LIKE '%.acsm' AND remotePath != ('/' || fileName)")
+    suspend fun getAcsmDocumentsNeedingRootPath(): List<DocumentEntity>
+
     @Query("SELECT * FROM documents WHERE sourceUrl = :sourceUrl LIMIT 1")
     suspend fun findBySourceUrl(sourceUrl: String): DocumentEntity?
 
@@ -81,6 +84,9 @@ interface DocumentDao {
 
     @Query("UPDATE documents SET syncStatus = 'ARCHIVED', archivedAt = :archivedAt, excerpt = COALESCE(:excerpt, excerpt), fileSizeBytes = 0 WHERE id = :id")
     suspend fun markArchived(id: Long, archivedAt: Long = System.currentTimeMillis(), excerpt: String? = null)
+
+    @Query("SELECT fileName FROM documents WHERE syncStatus = 'ARCHIVED' AND COALESCE(archivedAt, createdAt) < :cutoffTimestamp")
+    suspend fun getArchivedFileNamesOlderThan(cutoffTimestamp: Long): List<String>
 
     @Query("DELETE FROM documents WHERE syncStatus = 'ARCHIVED' AND COALESCE(archivedAt, createdAt) < :cutoffTimestamp")
     suspend fun deleteArchivedOlderThan(cutoffTimestamp: Long)

@@ -219,6 +219,7 @@ class CrossPointDeviceClient(
     private val baseClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
+        .addInterceptor(LocalDeviceHostValidator.createLocalDeviceCleartextGuardInterceptor())
         .build()
 
     @Volatile
@@ -259,7 +260,13 @@ class CrossPointDeviceClient(
                                 return try {
                                     apNet.getAllByName(hostname).toList()
                                 } catch (_: Exception) {
-                                    listOf(java.net.InetAddress.getByName(hostname))
+                                    val localAddrs = java.net.InetAddress.getAllByName(hostname).filter { addr ->
+                                        LocalDeviceHostValidator.isAllowedLocalAddress(addr)
+                                    }
+                                    if (localAddrs.isEmpty()) {
+                                        throw UnknownHostException("Blocked non-local fallback DNS resolution for AP host: $hostname")
+                                    }
+                                    localAddrs
                                 }
                             }
                         })

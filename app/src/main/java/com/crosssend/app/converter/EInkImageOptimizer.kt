@@ -8,6 +8,9 @@ import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.util.Log
+import androidx.core.content.edit
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Dns
@@ -20,6 +23,7 @@ import java.net.InetAddress
 import java.net.UnknownHostException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 
@@ -165,9 +169,22 @@ class EInkImageOptimizer(
 
         fun saveDetectedModel(context: Context, model: String) {
             context.getSharedPreferences("crosspoint_prefs", Context.MODE_PRIVATE)
-                .edit()
-                .putString("device_model", model)
-                .apply()
+                .edit {
+                    putString("device_model", model)
+                }
+        }
+
+        /**
+         * Persists a manually selected hardware profile and clears auto-detected custom screen
+         * dimensions so the chosen profile's dimensions take immediate effect.
+         */
+        fun saveSelectedHardwareProfile(context: Context, profile: CrossPointHardwareProfile) {
+            context.getSharedPreferences("crosspoint_prefs", Context.MODE_PRIVATE)
+                .edit {
+                    putString("device_model", profile.id)
+                    remove("screen_width")
+                    remove("screen_height")
+                }
         }
 
         fun getTargetScreenDimensions(context: Context? = null): Pair<Int, Int> {
@@ -228,7 +245,7 @@ class EInkImageOptimizer(
                 }
             }
 
-            val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val result = createBitmap(width, height)
             result.setPixels(outPixels, 0, width, 0, 0, width, height)
             return result
         }
@@ -354,9 +371,9 @@ class EInkImageOptimizer(
         fun isSafeExternalImageUrl(url: String): Boolean {
             return try {
                 val uri = java.net.URI(url)
-                val scheme = uri.scheme?.lowercase() ?: return false
+                val scheme = uri.scheme?.lowercase(Locale.ROOT) ?: return false
                 if (scheme != "http" && scheme != "https") return false
-                val rawHost = uri.host?.lowercase()?.trim() ?: return false
+                val rawHost = uri.host?.lowercase(Locale.ROOT)?.trim() ?: return false
                 if (rawHost.isBlank()) return false
                 val host = rawHost.removeSurrounding("[", "]")
                 if (host.isBlank() || host == "localhost") return false
@@ -367,7 +384,7 @@ class EInkImageOptimizer(
                 if (host == "lan" || host.endsWith(".lan")) return false
                 if (host == "0.0.0.0" || host == "::" || host == "::1" || host == "0:0:0:0:0:0:0:1") return false
                 if (host.startsWith("fe80:")) return false
-                if (host.startsWith("fc") || host.startsWith("fd")) return false
+                if (host.contains(':') && (host.startsWith("fc") || host.startsWith("fd"))) return false
                 if (host.startsWith("::ffff:127.") || host.startsWith("::ffff:10.") ||
                     host.startsWith("::ffff:192.168.") || host.startsWith("::ffff:169.254.")) return false
                 if (host.startsWith("::ffff:172.")) {
@@ -387,6 +404,33 @@ class EInkImageOptimizer(
         }
 
         fun isSafeExternalUrl(url: String): Boolean = isSafeExternalImageUrl(url)
+
+        fun isSafeHttpsExternalUrl(url: String): Boolean {
+            val trimmed = url.trim()
+            return trimmed.startsWith("https://", ignoreCase = true) && isSafeExternalImageUrl(trimmed)
+        }
+
+        private val CONTROL_AND_WHITESPACE_REGEX = Regex("[\\u0000-\\u0020]+")
+
+        /**
+         * Strict allowlist for sanitized HTML attribute URIs (`href`, `src`, etc.).
+         * Strips ASCII control characters and whitespace before verifying that the URI uses
+         * `https://` or `http://` (or `#anchor` / `/path` when [allowRelative] is true).
+         */
+        fun isSafeHtmlUri(rawValue: String, allowRelative: Boolean = true): Boolean {
+            val cleaned = rawValue
+                .replace(CONTROL_AND_WHITESPACE_REGEX, "")
+                .lowercase(Locale.ROOT)
+            if (cleaned.isEmpty()) return false
+            if (cleaned.startsWith("https://") || cleaned.startsWith("http://")) {
+                return true
+            }
+            if (allowRelative) {
+                if (cleaned.startsWith("#")) return true
+                if (cleaned.startsWith("/") && !cleaned.startsWith("//")) return true
+            }
+            return false
+        }
 
         val httpsOnlyInterceptor = okhttp3.Interceptor { chain ->
             val req = chain.request()
@@ -434,23 +478,18 @@ class EInkImageOptimizer(
             }
             response
         }
-    }
 
-    fun isSafeExternalImageUrl(url: String): Boolean = Companion.isSafeExternalImageUrl(url)
-    fun isSafeExternalUrl(url: String): Boolean = Companion.isSafeExternalImageUrl(url)
+        private data class FallbackClientKey(
+            val connectTimeoutSeconds: Long,
+            val readTimeoutSeconds: Long,
+            val followRedirects: Boolean,
+            val extraNetworkInterceptor: okhttp3.Interceptor?
+        )
 
-    private val client: OkHttpClient
-        get() = try {
-            com.crosssend.app.CrossSendApp.instance.wifiManager.getInternetOkHttpClientBuilder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(15, TimeUnit.SECONDS)
-                .addInterceptor(ssrfSafeInterceptor)
-                .addNetworkInterceptor(ssrfSafeInterceptor)
-                .build()
-        } catch (_: Exception) {
+        val fallbackInternetClient: OkHttpClient by lazy {
             OkHttpClient.Builder()
                 .dns(ssrfSafeDns)
-                .connectTimeout(10, TimeUnit.SECONDS)
+                .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
                 .addInterceptor(httpsOnlyInterceptor)
                 .addNetworkInterceptor(httpsOnlyInterceptor)
@@ -458,6 +497,65 @@ class EInkImageOptimizer(
                 .addNetworkInterceptor(ssrfSafeInterceptor)
                 .build()
         }
+
+        private val fallbackClientLock = Any()
+        private val cachedFallbackClients = HashMap<FallbackClientKey, OkHttpClient>()
+
+        /**
+         * Returns a cached SSRF-safe, HTTPS-only OkHttpClient via [CrossPointWifiManager] when
+         * the Application singleton is active, or falls back to a shared [fallbackInternetClient]
+         * in plain JVM unit-test / non-Application contexts.
+         */
+        fun getSafeInternetClient(
+            connectTimeoutSeconds: Long = 15,
+            readTimeoutSeconds: Long = connectTimeoutSeconds,
+            followRedirects: Boolean = true,
+            extraNetworkInterceptor: okhttp3.Interceptor? = null
+        ): OkHttpClient {
+            try {
+                return com.crosssend.app.CrossSendApp.instance.wifiManager.getSafeInternetClient(
+                    connectTimeoutSeconds = connectTimeoutSeconds,
+                    readTimeoutSeconds = readTimeoutSeconds,
+                    followRedirects = followRedirects,
+                    extraNetworkInterceptor = extraNetworkInterceptor
+                )
+            } catch (_: Exception) {
+                // Fall back to shared standalone client when Application context is unavailable
+            }
+            if (connectTimeoutSeconds == 15L &&
+                readTimeoutSeconds == 15L &&
+                followRedirects &&
+                extraNetworkInterceptor == null
+            ) {
+                return fallbackInternetClient
+            }
+            val key = FallbackClientKey(
+                connectTimeoutSeconds = connectTimeoutSeconds,
+                readTimeoutSeconds = readTimeoutSeconds,
+                followRedirects = followRedirects,
+                extraNetworkInterceptor = extraNetworkInterceptor
+            )
+            synchronized(fallbackClientLock) {
+                return cachedFallbackClients.getOrPut(key) {
+                    fallbackInternetClient.newBuilder()
+                        .connectTimeout(connectTimeoutSeconds, TimeUnit.SECONDS)
+                        .readTimeout(readTimeoutSeconds, TimeUnit.SECONDS)
+                        .followRedirects(followRedirects)
+                        .followSslRedirects(followRedirects)
+                        .apply {
+                            if (extraNetworkInterceptor != null) {
+                                addNetworkInterceptor(extraNetworkInterceptor)
+                            }
+                        }
+                        .build()
+                }
+            }
+        }
+    }
+
+    fun isSafeExternalImageUrl(url: String): Boolean = Companion.isSafeExternalImageUrl(url)
+    fun isSafeExternalUrl(url: String): Boolean = Companion.isSafeExternalImageUrl(url)
+    fun isSafeHttpsExternalUrl(url: String): Boolean = Companion.isSafeHttpsExternalUrl(url)
 
     // 380px fits comfortably on 480x800 screens, keeping decode times under 80ms on ESP32
     private val maxInlineDimension = 380
@@ -478,6 +576,7 @@ class EInkImageOptimizer(
         }
         try {
             val request = Request.Builder().url(imageUrl).build()
+            val client = getSafeInternetClient(connectTimeoutSeconds = 10, readTimeoutSeconds = 15)
             val imageBytes = client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     Log.w(tag, "Failed to download image: $imageUrl, HTTP ${response.code}")
@@ -523,13 +622,13 @@ class EInkImageOptimizer(
             val targetHeight = (originalBitmap.height * scale).roundToInt().coerceAtLeast(1)
 
             val scaledBitmap = if (scale < 1.0f) {
-                Bitmap.createScaledBitmap(originalBitmap, targetWidth, targetHeight, true)
+                originalBitmap.scale(targetWidth, targetHeight)
             } else {
                 originalBitmap
             }
 
             // 4. Convert to Grayscale with E-Ink Contrast-Boost (Deeper blacks, crisp whites)
-            val grayscaleBitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
+            val grayscaleBitmap = createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
             val canvas = Canvas(grayscaleBitmap)
             val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
             
@@ -671,12 +770,12 @@ class EInkImageOptimizer(
         val cropY = (maxOffsetY * clampedPanY).roundToInt().coerceIn(0, maxOffsetY)
 
         val cropped = Bitmap.createBitmap(source, cropX, cropY, cropWidth, cropHeight)
-        val scaled = Bitmap.createScaledBitmap(cropped, targetWidth, targetHeight, true)
+        val scaled = cropped.scale(targetWidth, targetHeight)
         if (cropped != source && cropped != scaled) {
             cropped.recycle()
         }
 
-        val resultBitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
+        val resultBitmap = createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
         val canvas = Canvas(resultBitmap)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
@@ -804,13 +903,13 @@ class EInkImageOptimizer(
             val targetHeight = (rawHeight * scale).roundToInt().coerceAtLeast(1)
 
             val scaledBitmap = if (scale < 1.0f) {
-                Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true)
+                source.scale(targetWidth, targetHeight)
             } else {
                 source
             }
 
             // Grayscale conversion with E-Ink Contrast-Boost
-            val grayscaleBitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
+            val grayscaleBitmap = createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
             val canvas = Canvas(grayscaleBitmap)
             val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 

@@ -1,7 +1,6 @@
 package com.crosssend.app.ui.screens
 
 import android.net.Uri
-import android.widget.Toast
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -14,41 +13,34 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.clearText
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FabPosition
@@ -57,6 +49,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -65,127 +58,112 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberSearchBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.crosssend.app.CrossSendApp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.crosssend.app.R
-import com.crosssend.app.WebArticleLoginRequest
+import com.crosssend.app.converter.DocumentProcessor
+import com.crosssend.app.converter.EInkImageOptimizer
 import com.crosssend.app.data.local.DocumentEntity
-import com.crosssend.app.data.model.DocumentType
 import com.crosssend.app.data.model.SyncStatus
 import com.crosssend.app.network.WifiConnectionState
 import com.crosssend.app.ui.components.CrossSendBottomToolbar
-import com.crosssend.app.ui.components.DocumentCard
-import com.crosssend.app.ui.components.DocumentCoverCard
+import com.crosssend.app.ui.components.CrossSendSearchInputField
+import com.crosssend.app.ui.components.DocumentGridOrList
 import com.crosssend.app.ui.components.DocumentPreviewDialog
+import com.crosssend.app.ui.components.DocumentSelectionTopAppBar
 import com.crosssend.app.ui.components.QuickConnectionSettingsDialog
+import com.crosssend.app.ui.viewmodel.DocumentSortOrder
+import com.crosssend.app.ui.viewmodel.MainDocFilter
+import com.crosssend.app.ui.viewmodel.MainViewModel
+import com.crosssend.app.ui.viewmodel.resolve
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.launch
-import java.io.File
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun MainScreen(
     onNavigateToFeeds: () -> Unit,
     onNavigateToDevice: () -> Unit,
     onNavigateToSettings: () -> Unit,
-    onNavigateToArchive: () -> Unit
+    onNavigateToArchive: () -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: MainViewModel = viewModel()
 ) {
     val context = LocalContext.current
     val resources = LocalResources.current
-    val app = CrossSendApp.instance
-    val scope = rememberCoroutineScope()
 
-    val connectionState by app.wifiManager.connectionState.collectAsState()
-    val isSyncing by app.syncManager.isSyncing.collectAsState()
-    val uploadProgressMap by app.syncManager.uploadProgressByDocId.collectAsState()
+    val documents by viewModel.documents.collectAsStateWithLifecycle()
+    val unsentCount by viewModel.unsentCount.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val selectedFilter by viewModel.selectedFilter.collectAsStateWithLifecycle()
+    val sortOrder by viewModel.sortOrder.collectAsStateWithLifecycle()
+    val isGridView by viewModel.isGridView.collectAsStateWithLifecycle()
+    val isSelectionMode by viewModel.isSelectionMode.collectAsStateWithLifecycle()
+    val selectedIds by viewModel.selectedIds.collectAsStateWithLifecycle()
+    val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
+    val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
+    val syncStatusText by viewModel.syncStatusText.collectAsStateWithLifecycle()
+    val uploadProgressByDocId by viewModel.uploadProgressByDocId.collectAsStateWithLifecycle()
 
-    val allVisibleDocuments by app.database.documentDao().getAllVisibleDocuments().collectAsState(initial = emptyList())
-    val pendingUploadCount by app.database.documentDao().getPendingUploadCountFlow().collectAsState(initial = 0)
-
-    // View mode: Grid (Covers) vs. List
-    var isGridView by remember { mutableStateOf(true) }
-
-    // Filter & search states
-    var selectedTypeFilter by remember { mutableStateOf<DocumentType?>(null) }
-    var onlyUnsynced by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
+    val searchTextFieldState = rememberTextFieldState(initialText = searchQuery)
+    val searchBarState = rememberSearchBarState()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    val documents = remember(allVisibleDocuments, selectedTypeFilter, onlyUnsynced, searchQuery) {
-        val q = searchQuery.trim()
-        allVisibleDocuments.filter { doc ->
-            val matchesType = selectedTypeFilter == null || doc.type == selectedTypeFilter
-            val matchesUnsynced = !onlyUnsynced ||
-                doc.syncStatus == SyncStatus.PENDING_UPLOAD ||
-                doc.syncStatus == SyncStatus.FAILED
-            val matchesQuery = q.isBlank() ||
-                doc.title.contains(q, ignoreCase = true) ||
-                doc.fileName.contains(q, ignoreCase = true) ||
-                (doc.sourceUrl?.contains(q, ignoreCase = true) == true)
-            matchesType && matchesUnsynced && matchesQuery
-        }.sortedWith(
-            compareByDescending<DocumentEntity> {
-                com.crosssend.app.util.DateUtils.parseFilenameTimestamp(it.fileName)?.time ?: it.createdAt
-            }.thenByDescending { it.fileName }
-        )
+    LaunchedEffect(searchTextFieldState) {
+        snapshotFlow { searchTextFieldState.text.toString() }
+            .collect { query -> viewModel.onSearchQueryChange(query) }
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.uiEvents.collect { uiMessage ->
+            snackbarHostState.showSnackbar(uiMessage.resolve(resources))
+        }
     }
 
     // Dialog states
+    var showSortMenu by remember { mutableStateOf(false) }
     var showQuickSettingsDialog by remember { mutableStateOf(false) }
     var documentToDelete by remember { mutableStateOf<DocumentEntity?>(null) }
     var showAddUrlDialog by remember { mutableStateOf(false) }
     var inputUrl by remember { mutableStateOf("") }
-
-    // Multi-Selection state
-    var isSelectionMode by remember { mutableStateOf(false) }
-    var selectedDocumentIds by remember { mutableStateOf(setOf<Long>()) }
     var showBatchDeleteDialog by remember { mutableStateOf(false) }
-
-    // Document Preview state
     var documentForPreview by remember { mutableStateOf<DocumentEntity?>(null) }
 
     // Back press exits selection mode, search, or active filters (Predictive Back)
     var backProgress by remember { mutableFloatStateOf(0f) }
     PredictiveBackHandler(
-        enabled = isSelectionMode || searchQuery.isNotEmpty() || selectedTypeFilter != null || onlyUnsynced
+        enabled = isSelectionMode || searchQuery.isNotEmpty() || selectedFilter != MainDocFilter.ALL
     ) { progress ->
         try {
             progress.collect { event ->
                 backProgress = event.progress
             }
-            if (isSelectionMode) {
-                isSelectionMode = false
-                selectedDocumentIds = emptySet()
-            } else if (searchQuery.isNotEmpty()) {
-                searchQuery = ""
-            } else {
-                selectedTypeFilter = null
-                onlyUnsynced = false
+            when {
+                isSelectionMode -> viewModel.clearSelection()
+                searchQuery.isNotEmpty() -> {
+                    searchTextFieldState.clearText()
+                    viewModel.onSearchQueryChange("")
+                }
+                selectedFilter != MainDocFilter.ALL -> viewModel.onFilterChange(MainDocFilter.ALL)
             }
         } catch (_: CancellationException) {
             backProgress = 0f
@@ -204,10 +182,8 @@ fun MainScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            val mimeType = context.contentResolver.getType(uri) ?: ""
-            app.applicationScope.launch {
-                app.documentProcessor.processFileUri(uri, mimeType)
-            }
+            val mimeType = context.contentResolver.getType(uri)
+            viewModel.importFile(uri, mimeType)
         }
     }
 
@@ -215,65 +191,24 @@ fun MainScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            Toast.makeText(context, resources.getString(R.string.main_toast_preparing_sleepscreen), Toast.LENGTH_SHORT).show()
-            app.applicationScope.launch {
-                try {
-                    app.documentProcessor.processSleepScreenUri(uri)
-                    snackbarHostState.showSnackbar(resources.getString(R.string.main_snackbar_sleepscreen_transferred))
-                } catch (e: Exception) {
-                    snackbarHostState.showSnackbar(resources.getString(R.string.main_snackbar_sleepscreen_error, e.localizedMessage ?: ""))
-                }
-            }
+            viewModel.setSleepScreen(uri)
         }
     }
 
     Scaffold(
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             if (isSelectionMode) {
                 val allIds = documents.map { it.id }.toSet()
-                val allSelected = allIds.isNotEmpty() && selectedDocumentIds.containsAll(allIds)
+                val allSelected = allIds.isNotEmpty() && selectedIds.containsAll(allIds)
 
-                TopAppBar(
-                    navigationIcon = {
-                        IconButton(onClick = {
-                            isSelectionMode = false
-                            selectedDocumentIds = emptySet()
-                        }) {
-                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.main_action_close_selection))
-                        }
-                    },
-                    title = {
-                        Text(
-                            text = stringResource(R.string.main_selection_count, selectedDocumentIds.size),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                    },
-                    actions = {
-                        TextButton(
-                            onClick = {
-                                selectedDocumentIds = if (allSelected) emptySet() else allIds
-                            }
-                        ) {
-                            Text(if (allSelected) stringResource(R.string.main_selection_none) else stringResource(R.string.main_selection_all))
-                        }
-
-                        IconButton(
-                            enabled = selectedDocumentIds.isNotEmpty(),
-                            onClick = { showBatchDeleteDialog = true }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Delete,
-                                contentDescription = stringResource(R.string.main_action_delete_selected),
-                                tint = if (selectedDocumentIds.isNotEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                    )
+                DocumentSelectionTopAppBar(
+                    selectedCount = selectedIds.size,
+                    allSelected = allSelected,
+                    onCloseSelection = { viewModel.clearSelection() },
+                    onToggleSelectAll = { viewModel.toggleSelectAll() },
+                    onRequestBatchDelete = { showBatchDeleteDialog = true }
                 )
             } else {
                 Surface(
@@ -286,80 +221,15 @@ fun MainScreen(
                             .statusBarsPadding()
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(horizontal = 14.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Search,
-                                    contentDescription = stringResource(R.string.main_search_hint),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .padding(horizontal = 8.dp),
-                                    contentAlignment = Alignment.CenterStart
-                                ) {
-                                    val focusManager = LocalFocusManager.current
-                                    val imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current)
-                                    var wasImeVisible by remember { mutableStateOf(false) }
-                                    LaunchedEffect(imeBottomPx) {
-                                        val isVisible = imeBottomPx > 0
-                                        if (wasImeVisible && !isVisible) {
-                                            focusManager.clearFocus(force = true)
-                                        }
-                                        wasImeVisible = isVisible
-                                    }
-                                    if (searchQuery.isEmpty()) {
-                                        Text(
-                                            text = stringResource(R.string.main_search_placeholder),
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                    BasicTextField(
-                                        value = searchQuery,
-                                        onValueChange = { searchQuery = it },
-                                        singleLine = true,
-                                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                        keyboardActions = KeyboardActions(
-                                            onSearch = { focusManager.clearFocus(force = true) },
-                                            onDone = { focusManager.clearFocus(force = true) }
-                                        ),
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
-                                if (searchQuery.isNotEmpty()) {
-                                    IconButton(
-                                        onClick = { searchQuery = "" },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = stringResource(R.string.main_clear_search),
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        CrossSendSearchInputField(
+                            textFieldState = searchTextFieldState,
+                            searchBarState = searchBarState,
+                            placeholderText = stringResource(R.string.main_search_placeholder),
+                            modifier = Modifier.weight(1f),
+                            onClearSearch = { viewModel.onSearchQueryChange("") }
+                        )
 
                         val isConnected = connectionState is WifiConnectionState.ConnectedToCrossPointAp ||
                             connectionState is WifiConnectionState.ConnectedOnLocalNetwork
@@ -376,8 +246,7 @@ fun MainScreen(
                                 colors = IconButtonDefaults.filledTonalIconButtonColors(
                                     containerColor = statusColors.syncedContainer,
                                     contentColor = statusColors.onSyncedContainer
-                                ),
-                                modifier = Modifier.size(44.dp)
+                                )
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.Devices,
@@ -387,9 +256,68 @@ fun MainScreen(
                             }
                         }
 
+                        Box {
+                            IconButton(onClick = { showSortMenu = true }) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Sort,
+                                    contentDescription = stringResource(R.string.main_sort_order),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showSortMenu,
+                                onDismissRequest = { showSortMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.main_sort_newest)) },
+                                    leadingIcon = if (sortOrder == DocumentSortOrder.NEWEST) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null
+                                            )
+                                        }
+                                    } else null,
+                                    onClick = {
+                                        viewModel.onSortOrderChange(DocumentSortOrder.NEWEST)
+                                        showSortMenu = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.main_sort_oldest)) },
+                                    leadingIcon = if (sortOrder == DocumentSortOrder.OLDEST) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null
+                                            )
+                                        }
+                                    } else null,
+                                    onClick = {
+                                        viewModel.onSortOrderChange(DocumentSortOrder.OLDEST)
+                                        showSortMenu = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.main_sort_title)) },
+                                    leadingIcon = if (sortOrder == DocumentSortOrder.TITLE) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null
+                                            )
+                                        }
+                                    } else null,
+                                    onClick = {
+                                        viewModel.onSortOrderChange(DocumentSortOrder.TITLE)
+                                        showSortMenu = false
+                                    }
+                                )
+                            }
+                        }
+
                         FilledTonalIconButton(
-                            onClick = { isGridView = !isGridView },
-                            modifier = Modifier.size(44.dp)
+                            onClick = { viewModel.toggleGridView() }
                         ) {
                             Icon(
                                 imageVector = if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
@@ -399,8 +327,7 @@ fun MainScreen(
                         }
 
                         FilledTonalIconButton(
-                            onClick = onNavigateToArchive,
-                            modifier = Modifier.size(44.dp)
+                            onClick = onNavigateToArchive
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.Inventory2,
@@ -417,18 +344,10 @@ fun MainScreen(
                 CrossSendBottomToolbar(
                     connectionState = connectionState,
                     isSyncing = isSyncing,
-                    pendingUploadCount = pendingUploadCount,
-                    onConnect = {
-                        scope.launch {
-                            app.wifiManager.connectOrDiscover(app.webDavClient)
-                        }
-                    },
+                    pendingUploadCount = unsentCount,
+                    onConnect = { viewModel.connectOrDiscover() },
                     onOpenConnectionSettings = { showQuickSettingsDialog = true },
-                    onSync = {
-                        scope.launch {
-                            app.syncManager.performSync()
-                        }
-                    },
+                    onSync = { viewModel.triggerSync() },
                     onOpenSettings = onNavigateToSettings,
                     onSelectFeeds = onNavigateToFeeds,
                     onAddUrl = { showAddUrlDialog = true },
@@ -471,13 +390,10 @@ fun MainScreen(
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                val isAllSelected = selectedTypeFilter == null && !onlyUnsynced
+                val isAllSelected = selectedFilter == MainDocFilter.ALL
                 FilterChip(
                     selected = isAllSelected,
-                    onClick = {
-                        selectedTypeFilter = null
-                        onlyUnsynced = false
-                    },
+                    onClick = { viewModel.onFilterChange(MainDocFilter.ALL) },
                     label = { Text(stringResource(R.string.main_filter_all)) },
                     leadingIcon = if (isAllSelected) {
                         {
@@ -490,13 +406,11 @@ fun MainScreen(
                     } else null
                 )
                 FilterChip(
-                    selected = selectedTypeFilter == DocumentType.ARTICLE,
+                    selected = selectedFilter == MainDocFilter.ARTICLES,
                     onClick = {
-                        selectedTypeFilter = if (selectedTypeFilter == DocumentType.ARTICLE) {
-                            null
-                        } else {
-                            DocumentType.ARTICLE
-                        }
+                        viewModel.onFilterChange(
+                            if (selectedFilter == MainDocFilter.ARTICLES) MainDocFilter.ALL else MainDocFilter.ARTICLES
+                        )
                     },
                     label = { Text(stringResource(R.string.main_filter_articles)) },
                     leadingIcon = {
@@ -508,13 +422,11 @@ fun MainScreen(
                     }
                 )
                 FilterChip(
-                    selected = selectedTypeFilter == DocumentType.BOOK,
+                    selected = selectedFilter == MainDocFilter.BOOKS,
                     onClick = {
-                        selectedTypeFilter = if (selectedTypeFilter == DocumentType.BOOK) {
-                            null
-                        } else {
-                            DocumentType.BOOK
-                        }
+                        viewModel.onFilterChange(
+                            if (selectedFilter == MainDocFilter.BOOKS) MainDocFilter.ALL else MainDocFilter.BOOKS
+                        )
                     },
                     label = { Text(stringResource(R.string.main_filter_books)) },
                     leadingIcon = {
@@ -526,12 +438,16 @@ fun MainScreen(
                     }
                 )
                 FilterChip(
-                    selected = onlyUnsynced,
-                    onClick = { onlyUnsynced = !onlyUnsynced },
+                    selected = selectedFilter == MainDocFilter.UNSENT,
+                    onClick = {
+                        viewModel.onFilterChange(
+                            if (selectedFilter == MainDocFilter.UNSENT) MainDocFilter.ALL else MainDocFilter.UNSENT
+                        )
+                    },
                     label = {
                         Text(
-                            if (pendingUploadCount > 0) {
-                                stringResource(R.string.main_filter_unsynced_count, pendingUploadCount)
+                            if (unsentCount > 0) {
+                                stringResource(R.string.main_filter_unsynced_count, unsentCount)
                             } else {
                                 stringResource(R.string.main_filter_unsynced)
                             }
@@ -545,6 +461,36 @@ fun MainScreen(
                         )
                     }
                 )
+            }
+
+            AnimatedVisibility(visible = isSyncing && syncStatusText.isNotBlank()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        LoadingIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                        Text(
+                            text = syncStatusText,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
 
             Box(
@@ -563,8 +509,8 @@ fun MainScreen(
                             Icon(
                                 imageVector = when {
                                     searchQuery.isNotBlank() -> Icons.Default.Search
-                                    onlyUnsynced -> Icons.Default.Sync
-                                    selectedTypeFilter == DocumentType.BOOK -> Icons.AutoMirrored.Filled.MenuBook
+                                    selectedFilter == MainDocFilter.UNSENT -> Icons.Default.Sync
+                                    selectedFilter == MainDocFilter.BOOKS -> Icons.AutoMirrored.Filled.MenuBook
                                     else -> Icons.AutoMirrored.Filled.Article
                                 },
                                 contentDescription = null,
@@ -575,12 +521,12 @@ fun MainScreen(
                             Text(
                                 text = when {
                                     searchQuery.isNotBlank() -> stringResource(R.string.main_empty_search_title, searchQuery)
-                                    onlyUnsynced -> stringResource(R.string.main_empty_unsynced_title)
-                                    selectedTypeFilter == DocumentType.ARTICLE -> stringResource(
+                                    selectedFilter == MainDocFilter.UNSENT -> stringResource(R.string.main_empty_unsynced_title)
+                                    selectedFilter == MainDocFilter.ARTICLES -> stringResource(
                                         R.string.main_empty_category_title,
                                         stringResource(R.string.main_filter_articles)
                                     )
-                                    selectedTypeFilter == DocumentType.BOOK -> stringResource(
+                                    selectedFilter == MainDocFilter.BOOKS -> stringResource(
                                         R.string.main_empty_category_title,
                                         stringResource(R.string.main_filter_books)
                                     )
@@ -594,9 +540,9 @@ fun MainScreen(
                             Text(
                                 text = when {
                                     searchQuery.isNotBlank() -> stringResource(R.string.main_empty_search_desc)
-                                    onlyUnsynced -> stringResource(R.string.main_empty_unsynced_desc)
-                                    selectedTypeFilter == DocumentType.ARTICLE -> stringResource(R.string.main_empty_articles_desc)
-                                    selectedTypeFilter == DocumentType.BOOK -> stringResource(R.string.main_empty_books_desc)
+                                    selectedFilter == MainDocFilter.UNSENT -> stringResource(R.string.main_empty_unsynced_desc)
+                                    selectedFilter == MainDocFilter.ARTICLES -> stringResource(R.string.main_empty_articles_desc)
+                                    selectedFilter == MainDocFilter.BOOKS -> stringResource(R.string.main_empty_books_desc)
                                     else -> stringResource(R.string.main_empty_library_desc)
                                 },
                                 style = MaterialTheme.typography.bodyMedium,
@@ -605,75 +551,29 @@ fun MainScreen(
                             )
                         }
                     }
-                } else if (isGridView) {
-                    // Adaptive Cover Grid View (Android 17 large-screen / tablet / foldable ready)
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 155.dp),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 110.dp)
-                    ) {
-                        items(documents, key = { it.id }) { doc ->
-                            val isSelected = selectedDocumentIds.contains(doc.id)
-                            DocumentCoverCard(
-                                document = doc,
-                                isSelectionMode = isSelectionMode,
-                                isSelected = isSelected,
-                                uploadProgress = uploadProgressMap[doc.id],
-                                onClick = {
-                                    if (isSelectionMode) {
-                                        selectedDocumentIds = if (isSelected) {
-                                            selectedDocumentIds - doc.id
-                                        } else {
-                                            selectedDocumentIds + doc.id
-                                        }
-                                    } else {
-                                        documentForPreview = doc
-                                    }
-                                },
-                                onLongClick = {
-                                    if (!isSelectionMode) {
-                                        isSelectionMode = true
-                                        selectedDocumentIds = setOf(doc.id)
-                                    }
-                                },
-                                onDelete = { documentToDelete = it }
-                            )
-                        }
-                    }
                 } else {
-                    // Compact List View
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(top = 4.dp, bottom = 110.dp)
-                    ) {
-                        items(documents, key = { it.id }) { doc ->
-                            val isSelected = selectedDocumentIds.contains(doc.id)
-                            DocumentCard(
-                                document = doc,
-                                isSelectionMode = isSelectionMode,
-                                isSelected = isSelected,
-                                uploadProgress = uploadProgressMap[doc.id],
-                                onClick = {
-                                    if (isSelectionMode) {
-                                        selectedDocumentIds = if (isSelected) {
-                                            selectedDocumentIds - doc.id
-                                        } else {
-                                            selectedDocumentIds + doc.id
-                                        }
-                                    } else {
-                                        documentForPreview = doc
-                                    }
-                                },
-                                onLongClick = {
-                                    if (!isSelectionMode) {
-                                        isSelectionMode = true
-                                        selectedDocumentIds = setOf(doc.id)
-                                    }
-                                },
-                                onDelete = { documentToDelete = it }
-                            )
-                        }
-                    }
+                    DocumentGridOrList(
+                        documents = documents,
+                        isGridView = isGridView,
+                        isSelectionMode = isSelectionMode,
+                        selectedDocumentIds = selectedIds,
+                        uploadProgressMap = uploadProgressByDocId,
+                        gridContentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 110.dp),
+                        listContentPadding = PaddingValues(top = 4.dp, bottom = 110.dp),
+                        onDocumentClick = { doc ->
+                            if (isSelectionMode) {
+                                viewModel.toggleSelection(doc.id)
+                            } else {
+                                documentForPreview = doc
+                            }
+                        },
+                        onDocumentLongClick = { doc ->
+                            if (!isSelectionMode) {
+                                viewModel.enterSelectionMode(doc.id)
+                            }
+                        },
+                        onDeleteDocument = { documentToDelete = it }
+                    )
                 }
             }
         }
@@ -689,71 +589,26 @@ fun MainScreen(
                 documentToDelete = toDelete
             },
             onResendFromArchive = { archivedDoc ->
-                archivedDoc.sourceUrl?.let { url ->
-                    app.applicationScope.launch {
-                        if (archivedDoc.renderMode == com.crosssend.app.data.model.RenderMode.ORIGINAL_LAYOUT) {
-                            app.documentProcessor.processWebUrlOriginalLayout(
-                                url = url,
-                                fallbackTitle = archivedDoc.title,
-                                author = archivedDoc.author,
-                                existingDoc = archivedDoc
-                            )
-                        } else {
-                            app.documentProcessor.processWebUrl(url, archivedDoc.title)
-                        }
-                    }
-                    Toast.makeText(context, resources.getString(R.string.main_toast_resending_article), Toast.LENGTH_SHORT).show()
-                }
+                viewModel.resendDocument(archivedDoc)
             }
         )
     }
 
     // Batch Delete Confirmation Dialog
-    if (showBatchDeleteDialog && selectedDocumentIds.isNotEmpty()) {
+    if (showBatchDeleteDialog && selectedIds.isNotEmpty()) {
         AlertDialog(
             onDismissRequest = { showBatchDeleteDialog = false },
             title = {
-                Text(pluralStringResource(R.plurals.main_dialog_batch_delete_title_files, selectedDocumentIds.size, selectedDocumentIds.size))
+                Text(pluralStringResource(R.plurals.main_dialog_batch_delete_title_files, selectedIds.size, selectedIds.size))
             },
             text = {
-                Text(pluralStringResource(R.plurals.main_dialog_batch_delete_msg_files, selectedDocumentIds.size, selectedDocumentIds.size))
+                Text(pluralStringResource(R.plurals.main_dialog_batch_delete_msg_files, selectedIds.size, selectedIds.size))
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val idsToDelete = selectedDocumentIds.toList()
                         showBatchDeleteDialog = false
-                        isSelectionMode = false
-                        selectedDocumentIds = emptySet()
-
-                        scope.launch {
-                            var hasSyncedDeletes = false
-                            for (id in idsToDelete) {
-                                val doc = app.database.documentDao().getById(id) ?: continue
-                                when (doc.syncStatus) {
-                                    SyncStatus.ARCHIVED -> {
-                                        app.database.documentDao().delete(doc)
-                                        File(context.filesDir, "library/covers/${doc.fileName}.jpg").delete()
-                                    }
-                                    SyncStatus.SYNCED -> {
-                                        val excerpt = doc.excerpt ?: com.crosssend.app.util.DocumentPreviewReader.readPreviewText(doc)?.take(300)
-                                        if (excerpt != null && doc.excerpt == null) {
-                                            app.database.documentDao().update(doc.copy(excerpt = excerpt))
-                                        }
-                                        app.database.documentDao().markPendingDelete(doc.id)
-                                        hasSyncedDeletes = true
-                                    }
-                                    SyncStatus.PENDING_UPLOAD, SyncStatus.FAILED, SyncStatus.PENDING_DELETE -> {
-                                        val excerpt = doc.excerpt ?: com.crosssend.app.util.DocumentPreviewReader.readPreviewText(doc)?.take(300)
-                                        File(doc.localPath).delete()
-                                        app.database.documentDao().markArchived(doc.id, System.currentTimeMillis(), excerpt)
-                                    }
-                                }
-                            }
-                            if (hasSyncedDeletes && (app.wifiManager.isConnected() || app.webDavClient.isReachable())) {
-                                app.syncManager.performSync()
-                            }
-                        }
+                        viewModel.deleteSelected()
                     }
                 ) {
                     Text(stringResource(R.string.main_action_delete), color = MaterialTheme.colorScheme.error)
@@ -771,11 +626,7 @@ fun MainScreen(
     if (showQuickSettingsDialog) {
         QuickConnectionSettingsDialog(
             onDismiss = { showQuickSettingsDialog = false },
-            onConnectRequested = {
-                scope.launch {
-                    app.wifiManager.connectOrDiscover(app.webDavClient)
-                }
-            }
+            onConnectRequested = { viewModel.connectOrDiscover() }
         )
     }
 
@@ -807,29 +658,7 @@ fun MainScreen(
                     onClick = {
                         val toDelete = doc
                         documentToDelete = null
-                        scope.launch {
-                            when (toDelete.syncStatus) {
-                                SyncStatus.ARCHIVED -> {
-                                    app.database.documentDao().delete(toDelete)
-                                    File(context.filesDir, "library/covers/${toDelete.fileName}.jpg").delete()
-                                }
-                                SyncStatus.SYNCED -> {
-                                    val excerpt = toDelete.excerpt ?: com.crosssend.app.util.DocumentPreviewReader.readPreviewText(toDelete)?.take(300)
-                                    if (excerpt != null && toDelete.excerpt == null) {
-                                        app.database.documentDao().update(toDelete.copy(excerpt = excerpt))
-                                    }
-                                    app.database.documentDao().markPendingDelete(toDelete.id)
-                                    if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
-                                        app.syncManager.performSync()
-                                    }
-                                }
-                                SyncStatus.PENDING_UPLOAD, SyncStatus.FAILED, SyncStatus.PENDING_DELETE -> {
-                                    val excerpt = toDelete.excerpt ?: com.crosssend.app.util.DocumentPreviewReader.readPreviewText(toDelete)?.take(300)
-                                    File(toDelete.localPath).delete()
-                                    app.database.documentDao().markArchived(toDelete.id, System.currentTimeMillis(), excerpt)
-                                }
-                            }
-                        }
+                        viewModel.deleteDocument(toDelete)
                     }
                 ) {
                     Text(stringResource(R.string.main_action_delete), color = MaterialTheme.colorScheme.error)
@@ -845,17 +674,22 @@ fun MainScreen(
 
     // Web URL Dialog (Saves as Article)
     if (showAddUrlDialog) {
+        val trimmedUrl = inputUrl.trim()
+        val normalizedUrl = DocumentProcessor.normalizeExternalHttpsUrl(trimmedUrl)
+        val isUrlValid = trimmedUrl.isNotEmpty() && EInkImageOptimizer.isSafeHttpsExternalUrl(normalizedUrl)
         AlertDialog(
             onDismissRequest = { showAddUrlDialog = false },
+            modifier = Modifier.imePadding(),
             title = { Text(stringResource(R.string.main_dialog_add_url_title)) },
             text = {
-                Column {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     Text(stringResource(R.string.main_dialog_add_url_desc))
                     Spacer(modifier = Modifier.height(12.dp))
                     OutlinedTextField(
                         value = inputUrl,
                         onValueChange = { inputUrl = it },
-                        label = { Text("https://…") },
+                        label = { Text(stringResource(R.string.main_label_url_hint)) },
+                        isError = trimmedUrl.isNotEmpty() && !isUrlValid,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -863,26 +697,27 @@ fun MainScreen(
             },
             confirmButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (inputUrl.isNotBlank()) {
+                    if (trimmedUrl.isNotEmpty()) {
                         TextButton(
+                            enabled = isUrlValid,
                             onClick = {
-                                val url = com.crosssend.app.converter.DocumentProcessor.normalizeExternalHttpsUrl(inputUrl)
-                                inputUrl = ""
-                                showAddUrlDialog = false
-                                app.pendingWebViewRequest.value = WebArticleLoginRequest(url)
+                                if (isUrlValid) {
+                                    inputUrl = ""
+                                    showAddUrlDialog = false
+                                    viewModel.openUrlInBrowser(normalizedUrl)
+                                }
                             }
                         ) {
                             Text(stringResource(R.string.main_button_in_browser))
                         }
                     }
                     TextButton(
-                        enabled = inputUrl.isNotBlank(),
+                        enabled = isUrlValid,
                         onClick = {
-                            val url = com.crosssend.app.converter.DocumentProcessor.normalizeExternalHttpsUrl(inputUrl)
-                            inputUrl = ""
-                            showAddUrlDialog = false
-                            app.applicationScope.launch {
-                                app.documentProcessor.processWebUrl(url)
+                            if (isUrlValid) {
+                                inputUrl = ""
+                                showAddUrlDialog = false
+                                viewModel.addUrl(normalizedUrl)
                             }
                         }
                     ) {
@@ -902,9 +737,10 @@ fun MainScreen(
     if (showAddNoteDialog) {
         AlertDialog(
             onDismissRequest = { showAddNoteDialog = false },
+            modifier = Modifier.imePadding(),
             title = { Text(stringResource(R.string.main_dialog_add_note_title)) },
             text = {
-                Column {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     OutlinedTextField(
                         value = noteTitle,
                         onValueChange = { noteTitle = it },
@@ -928,12 +764,12 @@ fun MainScreen(
                     enabled = noteContent.isNotBlank(),
                     onClick = {
                         val title = noteTitle.trim().ifBlank { null }
-                        val content = noteContent
-                        noteTitle = ""
-                        noteContent = ""
-                        showAddNoteDialog = false
-                        app.applicationScope.launch {
-                            app.documentProcessor.processEmailOrText(title, content)
+                        val content = noteContent.trim()
+                        if (content.isNotEmpty()) {
+                            noteTitle = ""
+                            noteContent = ""
+                            showAddNoteDialog = false
+                            viewModel.addTextNote(title, content)
                         }
                     }
                 ) {

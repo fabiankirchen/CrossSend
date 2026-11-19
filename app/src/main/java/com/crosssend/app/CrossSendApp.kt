@@ -2,8 +2,11 @@ package com.crosssend.app
 
 import android.app.Activity
 import android.app.Application
+import android.content.ComponentCallbacks2
+import android.content.Context
 import android.os.Bundle
 import android.webkit.WebView
+import androidx.core.content.edit
 import java.lang.ref.WeakReference
 import com.crosssend.app.converter.ArticleExtractor
 import com.crosssend.app.converter.EInkImageOptimizer
@@ -16,6 +19,8 @@ import com.crosssend.app.sync.SyncManager
 import com.crosssend.app.data.local.DocumentEntity
 import com.crosssend.app.data.model.DocumentType
 import com.crosssend.app.data.model.SyncStatus
+import com.crosssend.app.util.EpubCoverLoader
+import com.crosssend.app.util.RemoteImageLoader
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -81,6 +86,7 @@ class CrossSendApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        ensureInternalNotificationToken(this)
 
         try {
             WebView.enableSlowWholeDocumentDraw()
@@ -137,7 +143,7 @@ class CrossSendApp : Application() {
             }
         }
         articleExtractor = ArticleExtractor()
-        imageOptimizer = EInkImageOptimizer(cacheDir)
+        imageOptimizer = EInkImageOptimizer(this)
         epubBuilder = EpubBuilder()
         pdfExtractor = PdfExtractor(this)
         rssFeedParser = com.crosssend.app.network.RssFeedParser()
@@ -148,6 +154,20 @@ class CrossSendApp : Application() {
 
         applicationScope.launch {
             val ninetyDaysAgo = System.currentTimeMillis() - 90L * 24 * 60 * 60 * 1000L
+            val expiredFileNames = database.documentDao().getArchivedFileNamesOlderThan(ninetyDaysAgo)
+            for (fileName in expiredFileNames) {
+                val safeName = File(fileName).name
+                if (safeName.isBlank()) continue
+                EpubCoverLoader.deleteSidecarCoverForDocument(this@CrossSendApp, safeName)
+                for (docType in DocumentType.entries) {
+                    try {
+                        val cachedFile = File(File(libraryDir, docType.subfolder), safeName)
+                        if (cachedFile.exists()) {
+                            cachedFile.delete()
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
             database.documentDao().deleteArchivedOlderThan(ninetyDaysAgo)
 
             val twoHoursAgo = System.currentTimeMillis() - 2L * 60 * 60 * 1000L
@@ -256,9 +276,57 @@ class CrossSendApp : Application() {
         }
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        @Suppress("DEPRECATION")
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN || level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            EpubCoverLoader.clearMemoryCache()
+            RemoteImageLoader.clearMemoryCache()
+        }
+    }
+
     companion object {
+        private const val PREFS_NAME = "crosssend_prefs"
+        private const val KEY_INTERNAL_NOTIFICATION_TOKEN = "internal_notification_token"
+        private val tokenLock = Any()
+
         lateinit var instance: CrossSendApp
             private set
-        val INTERNAL_NOTIFICATION_TOKEN: String = java.util.UUID.randomUUID().toString()
+
+        @Volatile
+        private var cachedNotificationToken: String? = null
+
+        val INTERNAL_NOTIFICATION_TOKEN: String
+            get() {
+                cachedNotificationToken?.let { return it }
+                val app = if (::instance.isInitialized) instance else null
+                return if (app != null) {
+                    ensureInternalNotificationToken(app)
+                } else {
+                    synchronized(tokenLock) {
+                        cachedNotificationToken ?: java.util.UUID.randomUUID().toString().also {
+                            cachedNotificationToken = it
+                        }
+                    }
+                }
+            }
+
+        private fun ensureInternalNotificationToken(context: Context): String {
+            cachedNotificationToken?.let { return it }
+            return synchronized(tokenLock) {
+                cachedNotificationToken?.let { return@synchronized it }
+                val prefs = context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                val existing = prefs.getString(KEY_INTERNAL_NOTIFICATION_TOKEN, null)
+                val resolved = if (!existing.isNullOrBlank()) {
+                    existing
+                } else {
+                    java.util.UUID.randomUUID().toString().also { generated ->
+                        prefs.edit { putString(KEY_INTERNAL_NOTIFICATION_TOKEN, generated) }
+                    }
+                }
+                cachedNotificationToken = resolved
+                resolved
+            }
+        }
     }
 }

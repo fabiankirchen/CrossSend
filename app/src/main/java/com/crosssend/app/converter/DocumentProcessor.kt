@@ -11,6 +11,7 @@ import android.provider.OpenableColumns
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.net.toUri
 import com.crosssend.app.CrossSendApp
 import com.crosssend.app.MainActivity
 import com.crosssend.app.R
@@ -24,6 +25,11 @@ import com.crosssend.app.network.RssItem
 import com.crosssend.app.util.DateUtils
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -34,6 +40,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
+
+data class StagedShareFile(
+    val file: File,
+    val displayName: String,
+    val mimeType: String?
+)
 
 class DocumentProcessor(private val context: Context) {
     private val tag = "DocumentProcessor"
@@ -166,7 +178,7 @@ class DocumentProcessor(private val context: Context) {
             if (urlMatch != null && !isExplicitDocFile) {
                 // Shared text contains a web URL and this is not a standalone PDF/EPUB/ACSM file share.
                 // Prioritize processing the web article URL!
-                processWebUrl(urlMatch.value, fallbackTitle = subject, notificationId = notificationId)
+                processWebUrl(normalizeExternalHttpsUrl(urlMatch.value), fallbackTitle = subject, notificationId = notificationId)
             } else if (streamUri != null) {
                 val isImage = streamFileName.endsWith(".png") || streamFileName.endsWith(".jpg") ||
                               streamFileName.endsWith(".jpeg") || streamFileName.endsWith(".webp") ||
@@ -174,13 +186,13 @@ class DocumentProcessor(private val context: Context) {
                               streamUri.toString().contains("screenshot", ignoreCase = true)
 
                 if (isImage && urlMatch != null) {
-                    processWebUrl(urlMatch.value, fallbackTitle = subject, notificationId = notificationId)
+                    processWebUrl(normalizeExternalHttpsUrl(urlMatch.value), fallbackTitle = subject, notificationId = notificationId)
                 } else {
                     processFileUri(streamUri, mimeType, notificationId)
                 }
             } else if (!trimmedText.isNullOrBlank()) {
                 if (urlMatch != null && (trimmedText == urlMatch.value || trimmedText.length < urlMatch.value.length + 300 || trimmedText.lines().size <= 3)) {
-                    processWebUrl(urlMatch.value, fallbackTitle = subject, notificationId = notificationId)
+                    processWebUrl(normalizeExternalHttpsUrl(urlMatch.value), fallbackTitle = subject, notificationId = notificationId)
                 } else if (isHtmlContent(trimmedText) || mimeType.contains("html", ignoreCase = true)) {
                     processHtmlContent(trimmedText, baseUrl = null, subject = subject, notificationId = notificationId)
                 } else {
@@ -196,6 +208,102 @@ class DocumentProcessor(private val context: Context) {
             }
             Log.e(tag, "handleShare failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
+        }
+    }
+
+    suspend fun handleStagedShare(
+        stagedFiles: List<StagedShareFile>,
+        subject: String?,
+        sharedText: String?,
+        mimeType: String
+    ) = withContext(Dispatchers.IO) {
+        try {
+            if (stagedFiles.isEmpty()) {
+                handleShare(subject = subject, sharedText = sharedText, streamUri = null, mimeType = mimeType)
+                return@withContext
+            }
+
+            if (stagedFiles.size == 1) {
+                handleSingleStagedShare(stagedFiles.first(), subject, sharedText, mimeType, nextNotificationId())
+            } else {
+                for (staged in stagedFiles) {
+                    handleSingleStagedShare(staged, subject, sharedText, mimeType, nextNotificationId())
+                }
+            }
+        } finally {
+            cleanupStagedFiles(stagedFiles)
+        }
+    }
+
+    private suspend fun handleSingleStagedShare(
+        staged: StagedShareFile,
+        subject: String?,
+        sharedText: String?,
+        fallbackMimeType: String,
+        notificationId: Int
+    ) {
+        try {
+            val trimmedText = sharedText?.trim()
+            val urlRegex = "(https?://[\\w\\d:#@%/;$()~_?\\+-=\\\\\\.&]+)".toRegex()
+            val urlMatch = trimmedText?.let { urlRegex.find(it) }
+
+            val effectiveMime = staged.mimeType?.takeIf { it.isNotBlank() } ?: fallbackMimeType
+            val lowerName = staged.displayName.lowercase(Locale.ROOT)
+            val isExplicitDocFile = lowerName.endsWith(".pdf") ||
+                lowerName.endsWith(".epub") ||
+                lowerName.endsWith(".acsm") ||
+                effectiveMime.contains("pdf", ignoreCase = true) ||
+                effectiveMime.contains("epub", ignoreCase = true) ||
+                effectiveMime.contains("adobe.adept", ignoreCase = true)
+
+            if (urlMatch != null && !isExplicitDocFile) {
+                processWebUrl(normalizeExternalHttpsUrl(urlMatch.value), fallbackTitle = subject, notificationId = notificationId)
+            } else {
+                val isImage = lowerName.endsWith(".png") || lowerName.endsWith(".jpg") ||
+                    lowerName.endsWith(".jpeg") || lowerName.endsWith(".webp") ||
+                    effectiveMime.startsWith("image/", ignoreCase = true) ||
+                    lowerName.contains("screenshot")
+
+                if (isImage && urlMatch != null) {
+                    processWebUrl(normalizeExternalHttpsUrl(urlMatch.value), fallbackTitle = subject, notificationId = notificationId)
+                } else {
+                    processStagedFile(staged, effectiveMime, notificationId)
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
+            Log.e(tag, "handleStagedShare failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
+        }
+    }
+
+    private fun cleanupStagedFiles(stagedFiles: List<StagedShareFile>) {
+        val sharesRootCanonical = try {
+            File(context.cacheDir, "incoming_shares").canonicalPath
+        } catch (_: Exception) {
+            null
+        }
+        val dirsToDelete = LinkedHashSet<File>()
+        for (staged in stagedFiles) {
+            try {
+                if (staged.file.exists()) {
+                    staged.file.delete()
+                }
+                val parent = staged.file.parentFile
+                if (parent != null && sharesRootCanonical != null &&
+                    parent.canonicalPath.startsWith(sharesRootCanonical + File.separator)
+                ) {
+                    dirsToDelete.add(parent)
+                }
+            } catch (_: Exception) {}
+        }
+        for (dir in dirsToDelete) {
+            try {
+                dir.deleteRecursively()
+            } catch (_: Exception) {}
         }
     }
 
@@ -224,7 +332,7 @@ class DocumentProcessor(private val context: Context) {
                     File(existing.localPath).delete()
                     com.crosssend.app.util.EpubCoverLoader.deleteSidecarCoverForDocument(context, existing.fileName)
                 } catch (e: Exception) {
-                    Log.w(tag, "Konnte alte Datei nicht löschen: ${existing.localPath}", e)
+                    Log.w(tag, "Could not delete previous local file", e)
                 }
             }
             val obsoleteRemote = if (existing.syncStatus == SyncStatus.SYNCED && existing.remotePath != remotePath) {
@@ -287,7 +395,7 @@ class DocumentProcessor(private val context: Context) {
         showProgressNotification(notificationId, progressTitle, context.getString(R.string.proc_progress_rendering_layout), indeterminate = true)
 
         try {
-            require(EInkImageOptimizer.isSafeExternalImageUrl(url)) { "Invalid or internal URL blocked: $url" }
+            require(EInkImageOptimizer.isSafeHttpsExternalUrl(url)) { "Invalid or internal URL blocked: $url" }
             val slugTitle = app.articleExtractor.extractTitleFromUrlSlug(url)
             val initialTitle = fallbackTitle?.takeIf { it.isNotBlank() }
                 ?: existingDoc?.title?.takeIf { it.isNotBlank() }
@@ -394,7 +502,9 @@ class DocumentProcessor(private val context: Context) {
     suspend fun switchDocumentRenderMode(documentId: Long, newMode: RenderMode): Boolean = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
         val doc = app.database.documentDao().getById(documentId) ?: return@withContext false
-        val url = doc.sourceUrl?.takeIf { EInkImageOptimizer.isSafeExternalImageUrl(it) } ?: return@withContext false
+        val url = doc.sourceUrl?.let { normalizeExternalHttpsUrl(it) }
+            ?.takeIf { EInkImageOptimizer.isSafeHttpsExternalUrl(it) }
+            ?: return@withContext false
 
         // Persist domain preference for all future articles from this host
         DomainHostUtils.normalizeHost(url)?.let { host ->
@@ -452,8 +562,9 @@ class DocumentProcessor(private val context: Context) {
 
         var updatedCount = 0
         for (doc in docs) {
-            val url = doc.sourceUrl ?: continue
-            if (!EInkImageOptimizer.isSafeExternalImageUrl(url)) continue
+            val rawUrl = doc.sourceUrl ?: continue
+            val url = normalizeExternalHttpsUrl(rawUrl)
+            if (!EInkImageOptimizer.isSafeHttpsExternalUrl(url)) continue
             val ok = processWebUrlOriginalLayout(
                 url = url,
                 fallbackTitle = doc.title,
@@ -479,7 +590,7 @@ class DocumentProcessor(private val context: Context) {
     ): Boolean = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
         try {
-            require(EInkImageOptimizer.isSafeExternalImageUrl(url)) { "Invalid or internal URL blocked: $url" }
+            require(EInkImageOptimizer.isSafeHttpsExternalUrl(url)) { "Invalid or internal URL blocked: $url" }
             if (resolveRenderModeForUrl(url) == RenderMode.ORIGINAL_LAYOUT) {
                 return@withContext processWebUrlOriginalLayout(
                     url = url,
@@ -512,7 +623,7 @@ class DocumentProcessor(private val context: Context) {
                 triggerSync = triggerSync
             )
         } catch (paywallEx: PaywallOrLoginRequiredException) {
-            Log.i(tag, "Paywall / Login detected for $url: ${paywallEx.message}")
+            Log.i(tag, "Paywall / Login detected for ${redactUrlForLog(url)}: ${paywallEx.message}")
             showPaywallLoginNotification(notificationId, url, paywallEx.articleTitle ?: fallbackTitle)
             app.webArticleLoginRequest.value = com.crosssend.app.WebArticleLoginRequest(url, paywallEx.articleTitle ?: fallbackTitle)
             false
@@ -619,15 +730,12 @@ class DocumentProcessor(private val context: Context) {
 
             showProgressNotification(notificationId, article.title, context.getString(R.string.proc_progress_optimizing_images), indeterminate = true)
 
-            // 1. Optimize Cover image
-            val coverImage = article.leadImageUrl?.let {
-                app.imageOptimizer.optimizeImage(it, 0, isCover = true)
-            }
-
-            // 2. Optimize inline images
-            val inlineImages = article.imageUrls.take(12).mapIndexedNotNull { index, imgUrl ->
-                app.imageOptimizer.optimizeImage(imgUrl, index + 1, isCover = false)
-            }
+            // Optimize cover + up to 12 inline images with bounded concurrency while preserving original order
+            val (coverImage, inlineImages) = optimizeArticleImagesConcurrently(
+                imageOptimizer = app.imageOptimizer,
+                coverUrl = article.leadImageUrl,
+                inlineUrls = article.imageUrls.take(12)
+            )
 
             showProgressNotification(notificationId, article.title, context.getString(R.string.proc_progress_creating_epub), indeterminate = true)
             val effectiveDate = article.publishedDate
@@ -980,70 +1088,8 @@ class DocumentProcessor(private val context: Context) {
 
         try {
             val extracted = app.pdfExtractor.extractFromUri(uri, fallbackTitle)
-
-            // Extract first page as cover specifically for PDFs
             val coverBitmap = app.pdfExtractor.renderFirstPageAsBitmap(uri)
-            val coverImage = if (coverBitmap != null) {
-                val opt = app.imageOptimizer.optimizeBitmap(coverBitmap, isCover = true)
-                coverBitmap.recycle()
-                opt
-            } else null
-
-            val finalContentHtml = extracted.contentHtml
-
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
-            val cleanTitle = sanitizeFilename(extracted.title)
-            val fileName = "${timestamp}_${cleanTitle}.epub"
-
-            val docType = if (extracted.pageCount > 20) DocumentType.BOOK else DocumentType.ARTICLE
-            val targetDir = File(app.libraryDir, docType.subfolder).apply { mkdirs() }
-            val targetFile = ensureInsideDirectory(File(targetDir, fileName), targetDir)
-
-            val built = app.epubBuilder.buildEpub(
-                title = extracted.title,
-                author = extracted.author,
-                sourceUrl = resolvedFileName,
-                contentHtml = finalContentHtml,
-                coverImage = coverImage,
-                inlineImages = emptyList(),
-                outputFile = targetFile,
-                wordCount = extracted.wordCount,
-                readingTimeMinutes = extracted.readingTimeMinutes
-            )
-
-            if (built) {
-                com.crosssend.app.util.EpubCoverLoader.saveColorCoverForDocument(context, fileName, coverImage?.colorCoverFile)
-            }
-            coverImage?.localFile?.delete()
-            coverImage?.colorCoverFile?.delete()
-
-            val excerpt = org.jsoup.Jsoup.parse(finalContentHtml).text().take(300).takeIf { it.isNotBlank() }
-
-            if (built) {
-                val doc = DocumentEntity(
-                    title = extracted.title,
-                    author = extracted.author,
-                    sourceUrl = null,
-                    type = docType,
-                    localPath = targetFile.absolutePath,
-                    fileName = fileName,
-                    remotePath = "/crosssend/${docType.subfolder}/$fileName",
-                    fileSizeBytes = targetFile.length(),
-                    syncStatus = SyncStatus.PENDING_UPLOAD,
-                    excerpt = excerpt
-                )
-                app.database.documentDao().insert(doc)
-
-                if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
-                    showProgressNotification(notificationId, extracted.title, context.getString(R.string.proc_progress_transferring), indeterminate = true)
-                    app.syncManager.performSync()
-                    showSuccessNotification(notificationId, extracted.title, context.getString(R.string.proc_success_pdf_transferred))
-                } else {
-                    showSuccessNotification(notificationId, extracted.title, context.getString(R.string.proc_success_pdf_saved))
-                }
-            } else {
-                showErrorNotification(notificationId, context.getString(R.string.proc_error_eink_failed))
-            }
+            processExtractedPdf(extracted, coverBitmap, resolvedFileName, notificationId)
         } catch (e: Exception) {
             if (e is CancellationException) {
                 dismissNotification(notificationId)
@@ -1054,12 +1100,103 @@ class DocumentProcessor(private val context: Context) {
         }
     }
 
+    private suspend fun processPdfFile(file: File, rawFileName: String? = null, notificationId: Int = nextNotificationId()) = withContext(Dispatchers.IO) {
+        val app = CrossSendApp.instance
+        val rawName = rawFileName ?: file.name.ifBlank { context.getString(R.string.proc_default_pdf_filename) }
+        val resolvedFileName = sanitizeFileNameWithExtension(rawName, "pdf")
+        val fallbackTitle = resolvedFileName.substringBeforeLast('.')
+
+        showProgressNotification(notificationId, fallbackTitle, context.getString(R.string.proc_progress_converting_pdf), indeterminate = true)
+
+        try {
+            val extracted = app.pdfExtractor.extractFromFile(file, fallbackTitle)
+            val coverBitmap = app.pdfExtractor.renderFirstPageAsBitmap(file)
+            processExtractedPdf(extracted, coverBitmap, resolvedFileName, notificationId)
+        } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
+            Log.e(tag, "PDF processing failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_pdf, e.localizedMessage ?: ""))
+        }
+    }
+
+    private suspend fun processExtractedPdf(
+        extracted: ExtractedPdf,
+        coverBitmap: android.graphics.Bitmap?,
+        resolvedFileName: String,
+        notificationId: Int
+    ) {
+        val app = CrossSendApp.instance
+        val coverImage = if (coverBitmap != null) {
+            val opt = app.imageOptimizer.optimizeBitmap(coverBitmap, isCover = true)
+            coverBitmap.recycle()
+            opt
+        } else null
+
+        val finalContentHtml = extracted.contentHtml
+
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
+        val cleanTitle = sanitizeFilename(extracted.title)
+        val fileName = "${timestamp}_${cleanTitle}.epub"
+
+        val docType = if (extracted.pageCount > 20) DocumentType.BOOK else DocumentType.ARTICLE
+        val targetDir = File(app.libraryDir, docType.subfolder).apply { mkdirs() }
+        val targetFile = ensureInsideDirectory(File(targetDir, fileName), targetDir)
+
+        val built = app.epubBuilder.buildEpub(
+            title = extracted.title,
+            author = extracted.author,
+            sourceUrl = resolvedFileName,
+            contentHtml = finalContentHtml,
+            coverImage = coverImage,
+            inlineImages = emptyList(),
+            outputFile = targetFile,
+            wordCount = extracted.wordCount,
+            readingTimeMinutes = extracted.readingTimeMinutes
+        )
+
+        if (built) {
+            com.crosssend.app.util.EpubCoverLoader.saveColorCoverForDocument(context, fileName, coverImage?.colorCoverFile)
+        }
+        coverImage?.localFile?.delete()
+        coverImage?.colorCoverFile?.delete()
+
+        val excerpt = org.jsoup.Jsoup.parse(finalContentHtml).text().take(300).takeIf { it.isNotBlank() }
+
+        if (built) {
+            val doc = DocumentEntity(
+                title = extracted.title,
+                author = extracted.author,
+                sourceUrl = null,
+                type = docType,
+                localPath = targetFile.absolutePath,
+                fileName = fileName,
+                remotePath = "/crosssend/${docType.subfolder}/$fileName",
+                fileSizeBytes = targetFile.length(),
+                syncStatus = SyncStatus.PENDING_UPLOAD,
+                excerpt = excerpt
+            )
+            app.database.documentDao().insert(doc)
+
+            if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
+                showProgressNotification(notificationId, extracted.title, context.getString(R.string.proc_progress_transferring), indeterminate = true)
+                app.syncManager.performSync()
+                showSuccessNotification(notificationId, extracted.title, context.getString(R.string.proc_success_pdf_transferred))
+            } else {
+                showSuccessNotification(notificationId, extracted.title, context.getString(R.string.proc_success_pdf_saved))
+            }
+        } else {
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_eink_failed))
+        }
+    }
+
     suspend fun processAcsmUri(
         uri: Uri,
         rawFileName: String,
         notificationId: Int = nextNotificationId()
     ) = withContext(Dispatchers.IO) {
-        val app = CrossSendApp.instance
         val safeRawName = sanitizeFileNameWithExtension(rawFileName, "acsm")
         showProgressNotification(notificationId, safeRawName, context.getString(R.string.proc_progress_reading_acsm), indeterminate = true)
 
@@ -1068,123 +1205,7 @@ class DocumentProcessor(private val context: Context) {
                 ?: throw IllegalArgumentException(context.getString(R.string.proc_error_acsm_read))
             val acsmBytes = acsmStream.use { readBoundedBytes(it, MAX_ACSM_BYTES) }
                 ?: throw IllegalArgumentException(context.getString(R.string.proc_error_acsm_too_large))
-            val acsmContent = String(acsmBytes, Charsets.UTF_8)
-
-            // Extract metadata from ACSM XML
-            val titleRegex = "<(?:[a-zA-Z0-9]+:)?title[^>]*>([^<]+)</(?:[a-zA-Z0-9]+:)?title>".toRegex(RegexOption.IGNORE_CASE)
-            val creatorRegex = "<(?:[a-zA-Z0-9]+:)?creator[^>]*>([^<]+)</(?:[a-zA-Z0-9]+:)?creator>".toRegex(RegexOption.IGNORE_CASE)
-            val srcRegex = "<(?:[a-zA-Z0-9]+:)?src[^>]*>([^<]+)</(?:[a-zA-Z0-9]+:)?src>".toRegex(RegexOption.IGNORE_CASE)
-            val formatRegex = "<(?:[a-zA-Z0-9]+:)?format[^>]*>([^<]+)</(?:[a-zA-Z0-9]+:)?format>".toRegex(RegexOption.IGNORE_CASE)
-
-            val extractedTitle = titleRegex.find(acsmContent)?.groupValues?.get(1)?.trim()
-            val extractedCreator = creatorRegex.find(acsmContent)?.groupValues?.get(1)?.trim()
-            val srcUrl = srcRegex.find(acsmContent)?.groupValues?.get(1)?.trim()?.let {
-                org.jsoup.parser.Parser.unescapeEntities(it, true)
-            }
-            val format = formatRegex.find(acsmContent)?.groupValues?.get(1)?.trim()?.lowercase() ?: ""
-
-            val cleanTitle = if (!extractedTitle.isNullOrBlank()) {
-                sanitizeFilename(extractedTitle)
-            } else {
-                sanitizeFilename(safeRawName.removeSuffix(".acsm"))
-            }
-
-            val author = extractedCreator?.takeIf { it.isNotBlank() }
-            val booksDir = File(app.libraryDir, "books").apply { mkdirs() }
-
-            // Attempt direct download if <src> URL is available and accessible
-            var downloadedFile: File? = null
-            if (!srcUrl.isNullOrBlank() && srcUrl.startsWith("https://", ignoreCase = true)) {
-                try {
-                    require(EInkImageOptimizer.isSafeExternalImageUrl(srcUrl)) { "Invalid or internal ACSM download URL blocked: $srcUrl" }
-                    showProgressNotification(notificationId, cleanTitle, context.getString(R.string.proc_progress_downloading_book), indeterminate = true)
-                    val client = try {
-                        app.wifiManager.getInternetOkHttpClientBuilder()
-                            .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
-                            .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-                            .addInterceptor(EInkImageOptimizer.ssrfSafeInterceptor)
-                            .addNetworkInterceptor(EInkImageOptimizer.ssrfSafeInterceptor)
-                            .build()
-                    } catch (_: Exception) {
-                        okhttp3.OkHttpClient.Builder()
-                            .dns(EInkImageOptimizer.ssrfSafeDns)
-                            .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
-                            .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-                            .addInterceptor(okhttp3.Interceptor { chain ->
-                                val req = chain.request()
-                                if (!req.isHttps) {
-                                    throw java.io.IOException("Cleartext HTTP blocked for ACSM download: ${req.url}")
-                                }
-                                chain.proceed(req)
-                            })
-                            .addInterceptor(EInkImageOptimizer.ssrfSafeInterceptor)
-                            .addNetworkInterceptor(EInkImageOptimizer.ssrfSafeInterceptor)
-                            .build()
-                    }
-
-                    val req = okhttp3.Request.Builder().url(srcUrl).get().build()
-                    client.newCall(req).execute().use { resp ->
-                        if (resp.isSuccessful) {
-                            val bodyBytes = resp.body?.let { EInkImageOptimizer.readBoundedBytes(it, 50L * 1024 * 1024) }
-                            if (bodyBytes != null && bodyBytes.size > 100) {
-                                // Check if it is a valid EPUB (ZIP header 'PK') or PDF ('%PDF')
-                                val isZip = bodyBytes.size >= 4 && bodyBytes[0] == 0x50.toByte() && bodyBytes[1] == 0x4B.toByte()
-                                val isPdf = bodyBytes.size >= 4 && bodyBytes[0] == 0x25.toByte() && bodyBytes[1] == 0x50.toByte() && bodyBytes[2] == 0x44.toByte()
-
-                                if (isZip || isPdf || format.contains("epub") || format.contains("pdf")) {
-                                    val ext = if (isPdf || format.contains("pdf")) "pdf" else "epub"
-                                    val safeDownloadFileName = sanitizeFileNameWithExtension("${cleanTitle}.$ext", ext)
-                                    val targetFile = ensureInsideDirectory(File(booksDir, safeDownloadFileName), booksDir)
-                                    targetFile.writeBytes(bodyBytes)
-                                    downloadedFile = targetFile
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.d(tag, "Direct download from ACSM <src> failed (expected if DRM-protected): ${e.message}")
-                }
-            }
-
-            val finalFile: File
-            val finalFileName: String
-            val downloaded = downloadedFile
-            val isEpub = downloaded != null
-            val remotePath: String
-
-            if (downloaded != null) {
-                finalFile = downloaded
-                finalFileName = downloaded.name
-                remotePath = "/crosssend/books/$finalFileName"
-            } else {
-                // Save the .acsm file. It must land in "/" on the reader for Protected Content
-                finalFileName = sanitizeFileNameWithExtension("${cleanTitle}.acsm", "acsm")
-                finalFile = ensureInsideDirectory(File(booksDir, finalFileName), booksDir)
-                finalFile.writeBytes(acsmBytes)
-                remotePath = "/$finalFileName"
-            }
-
-            val doc = DocumentEntity(
-                title = extractedTitle ?: cleanTitle,
-                author = author,
-                sourceUrl = srcUrl,
-                type = DocumentType.BOOK,
-                localPath = finalFile.absolutePath,
-                fileName = finalFileName,
-                remotePath = remotePath,
-                fileSizeBytes = finalFile.length(),
-                syncStatus = SyncStatus.PENDING_UPLOAD
-            )
-            app.database.documentDao().insert(doc)
-
-            if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
-                app.syncManager.performSync()
-                val targetInfo = if (isEpub) "/crosssend/books/" else context.getString(R.string.proc_acsm_root_dir)
-                showSuccessNotification(notificationId, doc.title, context.getString(R.string.proc_success_acsm_transferred, targetInfo))
-            } else {
-                val targetInfo = if (isEpub) "in /crosssend/books/" else "in /"
-                showSuccessNotification(notificationId, doc.title, context.getString(R.string.proc_success_acsm_provided, targetInfo))
-            }
+            processAcsmBytes(acsmBytes, safeRawName, notificationId)
         } catch (e: Exception) {
             if (e is CancellationException) {
                 dismissNotification(notificationId)
@@ -1193,6 +1214,310 @@ class DocumentProcessor(private val context: Context) {
             Log.e(tag, "processAcsmUri failed", e)
             showErrorNotification(notificationId, context.getString(R.string.proc_error_acsm, e.localizedMessage ?: ""))
         }
+    }
+
+    private suspend fun processAcsmFile(
+        file: File,
+        rawFileName: String,
+        notificationId: Int = nextNotificationId()
+    ) = withContext(Dispatchers.IO) {
+        val safeRawName = sanitizeFileNameWithExtension(rawFileName, "acsm")
+        showProgressNotification(notificationId, safeRawName, context.getString(R.string.proc_progress_reading_acsm), indeterminate = true)
+
+        try {
+            val acsmBytes = file.inputStream().use { readBoundedBytes(it, MAX_ACSM_BYTES) }
+                ?: throw IllegalArgumentException(context.getString(R.string.proc_error_acsm_too_large))
+            processAcsmBytes(acsmBytes, safeRawName, notificationId)
+        } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
+            Log.e(tag, "processAcsmFile failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_acsm, e.localizedMessage ?: ""))
+        }
+    }
+
+    private suspend fun processAcsmBytes(
+        acsmBytes: ByteArray,
+        safeRawName: String,
+        notificationId: Int
+    ) {
+        val app = CrossSendApp.instance
+        val acsmContent = String(acsmBytes, Charsets.UTF_8)
+
+        // Extract metadata from ACSM XML
+        val titleRegex = "<(?:[a-zA-Z0-9]+:)?title[^>]*>([^<]+)</(?:[a-zA-Z0-9]+:)?title>".toRegex(RegexOption.IGNORE_CASE)
+        val creatorRegex = "<(?:[a-zA-Z0-9]+:)?creator[^>]*>([^<]+)</(?:[a-zA-Z0-9]+:)?creator>".toRegex(RegexOption.IGNORE_CASE)
+        val srcRegex = "<(?:[a-zA-Z0-9]+:)?src[^>]*>([^<]+)</(?:[a-zA-Z0-9]+:)?src>".toRegex(RegexOption.IGNORE_CASE)
+
+        val extractedTitle = titleRegex.find(acsmContent)?.groupValues?.get(1)?.trim()
+        val extractedCreator = creatorRegex.find(acsmContent)?.groupValues?.get(1)?.trim()
+        val srcUrl = srcRegex.find(acsmContent)?.groupValues?.get(1)?.trim()?.let {
+            org.jsoup.parser.Parser.unescapeEntities(it, true)
+        }
+
+        val cleanTitle = if (!extractedTitle.isNullOrBlank()) {
+            sanitizeFilename(extractedTitle)
+        } else {
+            sanitizeFilename(safeRawName.removeSuffix(".acsm"))
+        }
+
+        val author = extractedCreator?.takeIf { it.isNotBlank() }
+        val booksDir = File(app.libraryDir, "books").apply { mkdirs() }
+
+        // Attempt direct download if <src> URL is available and accessible
+        var downloadedFile: File? = null
+        if (!srcUrl.isNullOrBlank() && srcUrl.startsWith("https://", ignoreCase = true)) {
+            try {
+                require(EInkImageOptimizer.isSafeHttpsExternalUrl(srcUrl)) {
+                    "Invalid or internal ACSM download URL blocked"
+                }
+                showProgressNotification(notificationId, cleanTitle, context.getString(R.string.proc_progress_downloading_book), indeterminate = true)
+                val client = EInkImageOptimizer.getSafeInternetClient(
+                    connectTimeoutSeconds = 8,
+                    readTimeoutSeconds = 20
+                )
+
+                val req = okhttp3.Request.Builder().url(srcUrl).get().build()
+                client.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val bodyBytes = resp.body?.let { EInkImageOptimizer.readBoundedBytes(it, 50L * 1024 * 1024) }
+                        if (bodyBytes != null && bodyBytes.size > 100) {
+                            // Require valid EPUB (ZIP header 'PK') or PDF ('%PDF') magic bytes
+                            val isZip = bodyBytes.size >= 4 && bodyBytes[0] == 0x50.toByte() && bodyBytes[1] == 0x4B.toByte()
+                            val isPdf = bodyBytes.size >= 4 && bodyBytes[0] == 0x25.toByte() && bodyBytes[1] == 0x50.toByte() && bodyBytes[2] == 0x44.toByte()
+
+                            if (isZip || isPdf) {
+                                val ext = if (isPdf) "pdf" else "epub"
+                                val safeDownloadFileName = sanitizeFileNameWithExtension("${cleanTitle}.$ext", ext)
+                                val targetFile = ensureInsideDirectory(File(booksDir, safeDownloadFileName), booksDir)
+                                targetFile.writeBytes(bodyBytes)
+                                downloadedFile = targetFile
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(tag, "Direct download from ACSM <src> failed (expected if DRM-protected): ${e.message}")
+            }
+        }
+
+        val finalFile: File
+        val finalFileName: String
+        val downloaded = downloadedFile
+        val isEpub = downloaded != null
+        val remotePath: String
+
+        if (downloaded != null) {
+            finalFile = downloaded
+            finalFileName = downloaded.name
+            remotePath = "/crosssend/books/$finalFileName"
+        } else {
+            // Save the .acsm file. It must land in "/" on the reader for Protected Content
+            finalFileName = sanitizeFileNameWithExtension("${cleanTitle}.acsm", "acsm")
+            finalFile = ensureInsideDirectory(File(booksDir, finalFileName), booksDir)
+            finalFile.writeBytes(acsmBytes)
+            remotePath = "/$finalFileName"
+        }
+
+        val doc = DocumentEntity(
+            title = extractedTitle ?: cleanTitle,
+            author = author,
+            sourceUrl = srcUrl,
+            type = DocumentType.BOOK,
+            localPath = finalFile.absolutePath,
+            fileName = finalFileName,
+            remotePath = remotePath,
+            fileSizeBytes = finalFile.length(),
+            syncStatus = SyncStatus.PENDING_UPLOAD
+        )
+        app.database.documentDao().insert(doc)
+
+        if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
+            app.syncManager.performSync()
+            val targetInfo = if (isEpub) "/crosssend/books/" else context.getString(R.string.proc_acsm_root_dir)
+            showSuccessNotification(notificationId, doc.title, context.getString(R.string.proc_success_acsm_transferred, targetInfo))
+        } else {
+            val targetInfo = if (isEpub) "in /crosssend/books/" else "in /"
+            showSuccessNotification(notificationId, doc.title, context.getString(R.string.proc_success_acsm_provided, targetInfo))
+        }
+    }
+
+    private suspend fun processStagedFile(
+        staged: StagedShareFile,
+        mimeType: String,
+        notificationId: Int = nextNotificationId()
+    ) = withContext(Dispatchers.IO) {
+        val app = CrossSendApp.instance
+        val rawFileName = staged.displayName.ifBlank { "${context.getString(R.string.proc_default_file_prefix)}_${System.currentTimeMillis()}" }
+        val fileName = sanitizeFileNameWithExtension(rawFileName)
+
+        val isPdf = fileName.endsWith(".pdf", true) || mimeType.contains("pdf", ignoreCase = true)
+        if (isPdf) {
+            processPdfFile(staged.file, fileName, notificationId)
+            return@withContext
+        }
+
+        val isAcsm = fileName.endsWith(".acsm", true) ||
+            mimeType.contains("acsm", ignoreCase = true) ||
+            mimeType.contains("adobe.adept", ignoreCase = true)
+        if (isAcsm) {
+            processAcsmFile(staged.file, fileName, notificationId)
+            return@withContext
+        }
+
+        val isHtml = fileName.endsWith(".html", true) || fileName.endsWith(".htm", true) || mimeType.contains("html", ignoreCase = true)
+        if (isHtml) {
+            val htmlBytes = staged.file.inputStream().use { readBoundedBytes(it, MAX_HTML_BYTES) }
+            if (htmlBytes == null) {
+                showErrorNotification(notificationId, context.getString(R.string.proc_error_html_too_large))
+                return@withContext
+            }
+            val htmlContent = String(htmlBytes, Charsets.UTF_8)
+            if (htmlContent.isNotBlank()) {
+                val titleFromFileName = fileName.substringBeforeLast('.')
+                processHtmlContent(htmlContent, baseUrl = null, subject = titleFromFileName, notificationId = notificationId)
+                return@withContext
+            }
+        }
+
+        val isEpub = fileName.endsWith(".epub", true) || mimeType.contains("epub", ignoreCase = true)
+        val isText = fileName.endsWith(".txt", true) || fileName.endsWith(".md", true) || mimeType.startsWith("text/", ignoreCase = true)
+        val isImage = fileName.endsWith(".png", true) || fileName.endsWith(".jpg", true) ||
+            fileName.endsWith(".jpeg", true) || fileName.endsWith(".webp", true) ||
+            fileName.endsWith(".bmp", true) || mimeType.startsWith("image/", ignoreCase = true)
+
+        if (isImage) {
+            if (fileName.matches(Regex("""^\d{15,}\.(png|jpg|webp)$""")) || rawFileName.contains("screenshot", ignoreCase = true)) {
+                Log.w(tag, "Ignoring browser screenshot thumbnail")
+                return@withContext
+            }
+            processSleepScreenFile(staged.file, rawFileName, notificationId)
+            return@withContext
+        }
+
+        val docType = when {
+            isEpub -> DocumentType.BOOK
+            isText -> DocumentType.TEXT
+            else -> {
+                showErrorNotification(notificationId, context.getString(R.string.proc_error_unsupported_format, fileName))
+                return@withContext
+            }
+        }
+
+        showProgressNotification(notificationId, fileName, context.getString(R.string.proc_progress_copying_file), indeterminate = true)
+
+        try {
+            val targetDir = File(app.libraryDir, docType.subfolder).apply { mkdirs() }
+            val targetFile = ensureInsideDirectory(File(targetDir, fileName), targetDir)
+
+            val copiedBytes = try {
+                staged.file.inputStream().use { input ->
+                    FileOutputStream(targetFile).use { output ->
+                        copyBounded(input, output, MAX_FILE_COPY_BYTES)
+                    }
+                }
+            } catch (e: Exception) {
+                targetFile.delete()
+                throw e
+            }
+            if (copiedBytes < 0L) {
+                targetFile.delete()
+                throw IllegalArgumentException(context.getString(R.string.proc_error_file_too_large))
+            }
+
+            val remotePath = "/crosssend/${docType.subfolder}/$fileName"
+
+            val doc = DocumentEntity(
+                title = fileName.substringBeforeLast('.'),
+                author = null,
+                sourceUrl = null,
+                type = docType,
+                localPath = targetFile.absolutePath,
+                fileName = fileName,
+                remotePath = remotePath,
+                fileSizeBytes = targetFile.length(),
+                syncStatus = SyncStatus.PENDING_UPLOAD
+            )
+            app.database.documentDao().insert(doc)
+
+            if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
+                app.syncManager.performSync()
+                showSuccessNotification(notificationId, fileName, context.getString(R.string.proc_success_transferred))
+            } else {
+                showSuccessNotification(notificationId, fileName, context.getString(R.string.proc_success_saved_in, remotePath))
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
+            Log.e(tag, "processStagedFile failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_copying_file, e.localizedMessage ?: ""))
+        }
+    }
+
+    private suspend fun processSleepScreenFile(
+        file: File,
+        rawFileName: String,
+        notificationId: Int
+    ): DocumentEntity? = withContext(Dispatchers.IO) {
+        try {
+            showProgressNotification(notificationId, "Sleepscreen", context.getString(R.string.proc_progress_optimizing_sleepscreen), indeterminate = true)
+            val bytes = file.inputStream().use { readBoundedBytes(it, MAX_SLEEP_IMAGE_BYTES) }
+                ?: throw IllegalArgumentException(context.getString(R.string.proc_error_image_too_large))
+            processSleepScreenBytes(bytes, rawFileName, notificationId)
+        } catch (e: Exception) {
+            if (e is CancellationException) {
+                dismissNotification(notificationId)
+                throw e
+            }
+            Log.e(tag, "processSleepScreenFile failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_sleepscreen, e.localizedMessage ?: ""))
+            null
+        }
+    }
+
+    private suspend fun processSleepScreenBytes(
+        bytes: ByteArray,
+        rawFileName: String,
+        notificationId: Int
+    ): DocumentEntity {
+        val app = CrossSendApp.instance
+        val bmpBytes = imageOptimizer.optimizeSleepImage(bytes)
+            ?: throw IllegalStateException(context.getString(R.string.proc_error_bmp_convert))
+
+        val baseName = sanitizeFilename(rawFileName.substringBeforeLast('.'))
+        val finalFileName = "${baseName}.bmp"
+
+        val sleepDir = File(app.libraryDir, DocumentType.SLEEP.subfolder).apply { mkdirs() }
+        val targetFile = ensureInsideDirectory(File(sleepDir, finalFileName), sleepDir)
+        targetFile.writeBytes(bmpBytes)
+
+        val remotePath = "/sleep/$finalFileName"
+        val doc = DocumentEntity(
+            title = baseName,
+            author = null,
+            sourceUrl = null,
+            type = DocumentType.SLEEP,
+            localPath = targetFile.absolutePath,
+            fileName = finalFileName,
+            remotePath = remotePath,
+            fileSizeBytes = targetFile.length(),
+            createdAt = System.currentTimeMillis(),
+            syncStatus = SyncStatus.PENDING_UPLOAD
+        )
+        app.database.documentDao().insert(doc)
+
+        if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
+            showProgressNotification(notificationId, baseName, context.getString(R.string.proc_progress_transferring), indeterminate = true)
+            app.syncManager.performSync()
+            showSuccessNotification(notificationId, baseName, context.getString(R.string.proc_success_sleepscreen_transferred))
+        } else {
+            showSuccessNotification(notificationId, baseName, context.getString(R.string.proc_success_sleepscreen_saved))
+        }
+        return doc
     }
 
     suspend fun processFileUri(uri: Uri, mimeType: String, notificationId: Int = nextNotificationId()) = withContext(Dispatchers.IO) {
@@ -1380,12 +1705,16 @@ class DocumentProcessor(private val context: Context) {
 
     suspend fun processRssItem(item: RssItem, feedTitle: String, notificationId: Int = nextNotificationId()) = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
-        if (item.link.isNotBlank() &&
-            EInkImageOptimizer.isSafeExternalImageUrl(item.link) &&
-            resolveRenderModeForUrl(item.link) == RenderMode.ORIGINAL_LAYOUT
+        val targetUrl = if (item.link.isNotBlank() && EInkImageOptimizer.isSafeExternalImageUrl(item.link)) {
+            normalizeExternalHttpsUrl(item.link)
+        } else {
+            ""
+        }
+        if (EInkImageOptimizer.isSafeHttpsExternalUrl(targetUrl) &&
+            resolveRenderModeForUrl(targetUrl) == RenderMode.ORIGINAL_LAYOUT
         ) {
             processWebUrlOriginalLayout(
-                url = item.link,
+                url = targetUrl,
                 fallbackTitle = item.title,
                 author = item.author ?: feedTitle,
                 publishedDate = item.publishedDate,
@@ -1407,14 +1736,12 @@ class DocumentProcessor(private val context: Context) {
             val targetEpubFile = ensureInsideDirectory(File(articlesDir, fileName), articlesDir)
 
             showProgressNotification(notificationId, item.title, context.getString(R.string.proc_progress_optimizing_images), indeterminate = true)
-            val coverImage = item.imageUrls.firstOrNull()?.let {
-                app.imageOptimizer.optimizeImage(it, 0, isCover = true)
-            }
-
+            val (coverImage, inlineImages) = optimizeArticleImagesConcurrently(
+                imageOptimizer = app.imageOptimizer,
+                coverUrl = item.imageUrls.firstOrNull(),
+                inlineUrls = item.imageUrls.drop(1).take(10)
+            )
             val remainingImages = if (coverImage != null) item.imageUrls.drop(1) else item.imageUrls
-            val inlineImages = remainingImages.take(10).mapIndexedNotNull { i, imgUrl ->
-                app.imageOptimizer.optimizeImage(imgUrl, i + 1, isCover = false)
-            }
 
             showProgressNotification(notificationId, item.title, context.getString(R.string.proc_progress_creating_epub), indeterminate = true)
             val built = app.epubBuilder.buildEpub(
@@ -1505,7 +1832,7 @@ class DocumentProcessor(private val context: Context) {
         indeterminate: Boolean = true
     ) {
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle(title)
             .setContentText(message)
             .setProgress(max, progress, indeterminate)
@@ -1532,13 +1859,13 @@ class DocumentProcessor(private val context: Context) {
     }
 
     fun showSuccessNotification(notificationId: Int, title: String, subtitle: String) {
-        // Keine Bestätigungsmeldung erwünscht: Fortschrittsbenachrichtigung verschwindet nach Fertigstellung
+        // No confirmation notification desired: progress notification is dismissed upon completion
         dismissNotification(notificationId)
     }
 
     fun showErrorNotification(notificationId: Int, error: String) {
         val builder = NotificationCompat.Builder(context, CHANNEL_ALERTS_ID)
-            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle(context.getString(R.string.proc_notification_alert_title))
             .setContentText(error)
             .setStyle(NotificationCompat.BigTextStyle().bigText(error))
@@ -1571,7 +1898,7 @@ class DocumentProcessor(private val context: Context) {
         )
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ALERTS_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle(context.getString(R.string.proc_login_required_title, titleText))
             .setContentText(context.getString(R.string.proc_login_required_text))
             .setStyle(NotificationCompat.BigTextStyle().bigText(context.getString(R.string.proc_login_required_big_text)))
@@ -1722,6 +2049,42 @@ class DocumentProcessor(private val context: Context) {
         val safeBase = sanitizeFilename(baseName)
         val safeExt = ext.replace(Regex("[^a-zA-Z0-9]"), "").take(10)
         return if (safeExt.isNotBlank()) "$safeBase.$safeExt" else safeBase
+    }
+
+    private suspend fun optimizeArticleImagesConcurrently(
+        imageOptimizer: EInkImageOptimizer,
+        coverUrl: String?,
+        inlineUrls: List<String>
+    ): Pair<OptimizedImage?, List<OptimizedImage>> = coroutineScope {
+        val semaphore = Semaphore(3)
+        val coverDeferred = coverUrl?.let { url ->
+            async {
+                semaphore.withPermit {
+                    imageOptimizer.optimizeImage(url, 0, isCover = true)
+                }
+            }
+        }
+        val inlineDeferreds = inlineUrls.mapIndexed { index, imgUrl ->
+            async {
+                semaphore.withPermit {
+                    imageOptimizer.optimizeImage(imgUrl, index + 1, isCover = false)
+                }
+            }
+        }
+        val coverImage = coverDeferred?.await()
+        val inlineImages = inlineDeferreds.awaitAll().filterNotNull()
+        coverImage to inlineImages
+    }
+
+    private fun redactUrlForLog(rawUrl: String): String {
+        val parsed = rawUrl.toUri()
+        val scheme = parsed.scheme
+        val host = parsed.host
+        return if (!scheme.isNullOrBlank() && !host.isNullOrBlank()) {
+            "$scheme://$host"
+        } else {
+            "(redacted-url)"
+        }
     }
 
     fun ensureInsideDirectory(file: File, dir: File): File {

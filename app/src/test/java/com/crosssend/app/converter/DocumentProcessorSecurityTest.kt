@@ -107,6 +107,35 @@ class DocumentProcessorSecurityTest {
     }
 
     @Test
+    fun `isSafeHttpsExternalUrl blocks cleartext http internal targets and allows external https`() {
+        assertFalse(EInkImageOptimizer.isSafeHttpsExternalUrl("http://example.com/article.html"))
+        assertFalse(EInkImageOptimizer.isSafeHttpsExternalUrl("HTTP://example.com/feed.xml"))
+        assertFalse(EInkImageOptimizer.isSafeHttpsExternalUrl("https://127.0.0.1/admin"))
+        assertFalse(EInkImageOptimizer.isSafeHttpsExternalUrl("https://localhost:8443/secret"))
+        assertFalse(EInkImageOptimizer.isSafeHttpsExternalUrl("https://192.168.4.1/api/status"))
+        assertFalse(EInkImageOptimizer.isSafeHttpsExternalUrl("https://10.0.0.1/internal"))
+        assertFalse(EInkImageOptimizer.isSafeHttpsExternalUrl("https://169.254.169.254/latest/meta-data/"))
+        assertFalse(EInkImageOptimizer.isSafeHttpsExternalUrl("https://crosspoint.local/cover.jpg"))
+        assertFalse(EInkImageOptimizer.isSafeHttpsExternalUrl("file:///etc/passwd"))
+        assertFalse(EInkImageOptimizer.isSafeHttpsExternalUrl("javascript:alert(1)"))
+        assertTrue(EInkImageOptimizer.isSafeHttpsExternalUrl("https://example.com/article.html"))
+        assertTrue(EInkImageOptimizer.isSafeHttpsExternalUrl("  https://news.ycombinator.com/rss  "))
+    }
+
+    @Test
+    fun `isSafeExternalImageUrl allows fc and fd domains while blocking IPv6 ULA literals`() {
+        assertTrue(EInkImageOptimizer.isSafeExternalImageUrl("https://fcd.example.com/article"))
+        assertTrue(EInkImageOptimizer.isSafeExternalImageUrl("https://fdn.org/feed.xml"))
+        assertTrue(EInkImageOptimizer.isSafeExternalImageUrl("https://fc.example.org/cover.jpg"))
+        assertTrue(EInkImageOptimizer.isSafeExternalImageUrl("https://fd-news.example.net/image.png"))
+
+        assertFalse(EInkImageOptimizer.isSafeExternalImageUrl("https://[fc00::1]/secret"))
+        assertFalse(EInkImageOptimizer.isSafeExternalImageUrl("https://[fd12:3456:789a::1]/secret"))
+        assertFalse(EInkImageOptimizer.isSafeExternalImageUrl("https://[FC00::1]/secret"))
+        assertFalse(EInkImageOptimizer.isSafeExternalImageUrl("https://[FD00::1]/secret"))
+    }
+
+    @Test
     fun `readBoundedBytes reads exact and under-limit streams and rejects oversized streams`() {
         val payload = ByteArray(1024) { (it % 251).toByte() }
 
@@ -142,5 +171,49 @@ class DocumentProcessorSecurityTest {
 
         val negativeOut = ByteArrayOutputStream()
         assertEquals(-1L, DocumentProcessor.copyBounded(ByteArrayInputStream(payload), negativeOut, -1L))
+    }
+
+    @Test
+    fun `RemoteImageLoader uses deterministic SHA-256 filenames and prunes oldest files beyond limit`() {
+        val urlA = "https://example.com/thumb/a.jpg"
+        val urlB = "https://example.com/thumb/b.jpg"
+        val nameA = com.crosssend.app.util.RemoteImageLoader.cacheFileNameForUrl(urlA)
+        val nameB = com.crosssend.app.util.RemoteImageLoader.cacheFileNameForUrl(urlB)
+
+        assertTrue(nameA.matches(Regex("^thumb_[0-9a-f]{32}\\.jpg$")))
+        assertEquals(nameA, com.crosssend.app.util.RemoteImageLoader.cacheFileNameForUrl(urlA))
+        assertFalse(nameA == nameB)
+
+        val tempDir = Files.createTempDirectory("rss_thumbs_prune_test").toFile()
+        try {
+            val baseTime = 1_700_000_000_000L
+            for (i in 0 until 210) {
+                val f = File(tempDir, "thumb_$i.jpg")
+                f.writeBytes(byteArrayOf(1, 2, 3))
+                f.setLastModified(baseTime + i * 1000L)
+            }
+            com.crosssend.app.util.RemoteImageLoader.pruneDiskCacheIfNeeded(tempDir, nowMs = baseTime + 500_000L, force = true)
+            val remaining = tempDir.listFiles()?.map { it.name }?.toSet().orEmpty()
+            assertEquals(200, remaining.size)
+            for (i in 0 until 10) {
+                assertFalse("Oldest file thumb_$i.jpg should have been evicted", "thumb_$i.jpg" in remaining)
+            }
+            assertTrue("Newest file thumb_209.jpg should remain", "thumb_209.jpg" in remaining)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `EInkImageOptimizer getSafeInternetClient reuses cached fallback client`() {
+        val defaultClient = EInkImageOptimizer.getSafeInternetClient()
+        val sameDefault = EInkImageOptimizer.getSafeInternetClient(15, 15, true, null)
+        assertTrue(defaultClient === sameDefault)
+
+        val customA = EInkImageOptimizer.getSafeInternetClient(connectTimeoutSeconds = 8, readTimeoutSeconds = 10)
+        val customB = EInkImageOptimizer.getSafeInternetClient(connectTimeoutSeconds = 8, readTimeoutSeconds = 10)
+        assertTrue(customA === customB)
+        assertEquals(8_000, customA.connectTimeoutMillis)
+        assertEquals(10_000, customA.readTimeoutMillis)
     }
 }

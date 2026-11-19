@@ -151,6 +151,8 @@
     <string name="settings_xtch_zoom_label">Web text zoom: %1$d%%</string>
     <string name="settings_xtch_lighten_dark">Lighten dark websites for E-Ink</string>
     <string name="settings_xtch_lighten_dark_desc">Converts dark-mode web backgrounds into bright paper pages</string>
+    <string name="settings_xtch_page_numbers">Show page numbers in footer</string>
+    <string name="settings_xtch_page_numbers_desc">Adds a subtle “1 / 12” indicator at the bottom of each page</string>
     <string name="settings_section_domains">Saved Website Rules</string>
     <string name="settings_domains_empty">No website-specific rules yet. Toggle the display mode inside any article preview to remember it for its domain.</string>
     <string name="settings_domain_reset">Remove rule</string>
@@ -183,4 +185,19 @@
     <string name="dev_category_device">Device</string>
     <string name="dev_unit_minutes">\u0020min</string>
     <string name="dev_plugin_start_error">Error starting plugin:\u0020</string>
+    <string name="dev_plugin_default_description">CrossPoint SD Plugin</string>
+    <string name="dev_plugin_mount">Mount: %1$s</string>
+    <string name="dev_plugin_protected_content_desc">Fulfill protected books (Adobe / ByteBooks) directly via smartphone without reader Wi-Fi.</string>
+    <string name="dev_config_json_file_label">config.json</string>
+    <string name="dev_settings_cat_cloud">KOReader &amp; Cloud Sync</string>
+    <string name="dev_settings_cat_reader">Reading Experience &amp; Typography</string>
+    <string name="dev_settings_cat_display">Display &amp; Screensaver</string>
+    <string name="dev_settings_cat_controls">Buttons &amp; Gesture Controls</string>
+    <string name="dev_settings_cat_system">System &amp; Power</string>
+    <string name="dev_settings_cat_other">Other Options</string>
+    <string name="device_show_password">Show password</string>
+    <string name="device_hide_password">Hide password</string>
+    <string name="device_hardware_profile_saved">Hardware profile set to %1$s</string>
+    <string name="device_quick_address_saved">Reader address updated: %1$s</string>
+    <string name="device_error_invalid_address">Invalid local reader address. Only RFC 1918 LAN IPs or .local hosts are allowed.</string>
 </resources>
