@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -75,7 +76,6 @@ fun CrossSendBottomToolbar(
     onPickFile: () -> Unit,
     onAddNote: () -> Unit,
     modifier: Modifier = Modifier,
-    onOpenConnectionSettings: () -> Unit = {},
     onPickSleepScreenClick: (() -> Unit)? = null
 ) {
     val isConnected = connectionState is WifiConnectionState.ConnectedToCrossPointAp ||
@@ -243,7 +243,8 @@ fun CrossSendBottomToolbar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 36.dp)
+                    .padding(bottom = 24.dp)
+                    .navigationBarsPadding()
             ) {
                 Text(
                     text = stringResource(R.string.toolbar_sheet_title),
@@ -301,18 +302,6 @@ fun CrossSendBottomToolbar(
                         }
                     )
                 }
-
-                ActionSheetItem(
-                    title = stringResource(R.string.conn_dialog_title),
-                    subtitle = stringResource(R.string.conn_dialog_desc),
-                    icon = Icons.Default.Wifi,
-                    iconContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    iconTint = MaterialTheme.colorScheme.onSurface,
-                    onClick = {
-                        showActionSheet = false
-                        onOpenConnectionSettings()
-                    }
-                )
             }
         }
     }

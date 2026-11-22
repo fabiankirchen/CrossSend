@@ -1,12 +1,13 @@
 package com.crosssend.app.network
 
-import android.util.Log
 import com.crosssend.app.converter.EInkImageOptimizer
 import com.crosssend.app.util.DateUtils
+import com.crosssend.app.util.UrlSanitizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
 import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -33,10 +34,89 @@ data class RssItem(
 )
 
 class RssFeedParser {
-    private val tag = "RssFeedParser"
+
+    companion object {
+        private val ALLOWED_FEED_TAGS = setOf(
+            "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6",
+            "blockquote", "pre", "code", "ul", "ol", "li",
+            "strong", "b", "em", "i", "u", "s", "del", "sub", "sup",
+            "a", "img", "figure", "figcaption",
+            "table", "thead", "tbody", "tr", "th", "td",
+            "div", "span"
+        )
+
+        private val TRACKER_HOST_SUFFIXES = setOf(
+            "pixel.wp.com",
+            "stats.wp.com",
+            "scorecardresearch.com",
+            "google-analytics.com",
+            "analytics.google.com",
+            "doubleclick.net",
+            "pixel.quantserve.com",
+            "bat.bing.com",
+            "px.ads.linkedin.com",
+            "analytics.twitter.com",
+            "mc.yandex.ru",
+            "trc.taboola.com",
+            "tags.bluekai.com",
+            "feedportal.com",
+            "eotrx.substackcdn.com"
+        )
+
+        private val PIXEL_DIMENSION_REGEX = Regex("""(?:width|height)\s*:\s*(?:0|1|2)(?:px)?\b""", RegexOption.IGNORE_CASE)
+    }
+
+    internal fun isTrackingPixel(url: String, img: Element? = null): Boolean {
+        val clean = url.trim().lowercase(Locale.ROOT)
+        if (clean.isEmpty()) return true
+
+        if (img != null) {
+            val w = img.attr("width").trim().removeSuffix("px").toIntOrNull()
+            val h = img.attr("height").trim().removeSuffix("px").toIntOrNull()
+            if ((w != null && w <= 2) || (h != null && h <= 2)) {
+                return true
+            }
+            val style = img.attr("style").lowercase(Locale.ROOT)
+            if (style.contains("display:none") ||
+                style.contains("display: none") ||
+                style.contains("visibility:hidden") ||
+                style.contains("visibility: hidden") ||
+                PIXEL_DIMENSION_REGEX.containsMatchIn(style)
+            ) {
+                return true
+            }
+        }
+
+        val parsed = runCatching { java.net.URI(clean) }.getOrNull()
+        val host = parsed?.host?.lowercase(Locale.ROOT).orEmpty()
+        val path = parsed?.path?.lowercase(Locale.ROOT).orEmpty()
+
+        if (host.isNotEmpty() && TRACKER_HOST_SUFFIXES.any { suffix ->
+                host == suffix || host.endsWith(".$suffix")
+            }
+        ) {
+            return true
+        }
+        if ((host == "feeds.feedburner.com" || host == "rss.feedburner.com") &&
+            (path.contains("/~r/") || path.contains("/~ff/") || path.endsWith("~4"))
+        ) {
+            return true
+        }
+        if (host.endsWith("facebook.com") && path.startsWith("/tr")) return true
+        if (host.endsWith("list-manage.com") && path.contains("/track/open")) return true
+        if (host.endsWith("substack.com") && path.startsWith("/o/")) return true
+
+        return path.endsWith("/1x1.gif") ||
+            path.endsWith("/1x1.png") ||
+            path.endsWith("/spacer.gif") ||
+            path.endsWith("/clear.gif") ||
+            path.contains("/pixel.") ||
+            path.contains("/beacon.")
+    }
 
     suspend fun fetchFeed(feedUrl: String): RssFeed = withContext(Dispatchers.IO) {
-        require(EInkImageOptimizer.isSafeHttpsExternalUrl(feedUrl)) {
+        val targetFeedUrl = UrlSanitizer.stripTrackingParams(feedUrl)
+        require(EInkImageOptimizer.isSafeHttpsExternalUrl(targetFeedUrl)) {
             try {
                 com.crosssend.app.CrossSendApp.instance.getString(com.crosssend.app.R.string.feeds_error_unsafe_url)
             } catch (_: Throwable) {
@@ -44,8 +124,8 @@ class RssFeedParser {
             }
         }
         val request = Request.Builder()
-            .url(feedUrl)
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 8) CrossSend/1.0")
+            .url(targetFeedUrl)
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 CrossSend/1.0")
             .build()
 
         val client = EInkImageOptimizer.getSafeInternetClient(connectTimeoutSeconds = 15, readTimeoutSeconds = 20)
@@ -68,37 +148,51 @@ class RssFeedParser {
             )
             EInkImageOptimizer.readBoundedString(responseBody, 10L * 1024 * 1024)
         }
-        parseFeedXml(xml, feedUrl)
+        parseFeedXml(xml, targetFeedUrl)
     }
 
     private fun sanitizeFeedDocument(doc: org.jsoup.nodes.Document): String {
         doc.select(
-            "script, style, iframe, form, button, input, nav, footer, aside, " +
+            "script, style, iframe, form, button, input, select, textarea, nav, footer, aside, " +
                 "noscript, object, embed, svg, math, video, audio, source, track, canvas, map, area, applet, base, meta, link"
         ).remove()
-        for (img in doc.select("img")) {
-            if (!EInkImageOptimizer.isSafeHtmlUri(img.attr("src"), allowRelative = false)) {
-                img.remove()
-            }
-        }
-        val uriAttributes = setOf("href", "src", "xlink:href", "formaction", "srcdoc", "action", "data")
-        for (el in doc.body().getAllElements()) {
-            if (el == doc.body()) continue
-            val attrsToRemove = mutableListOf<String>()
-            for (attr in el.attributes()) {
-                val key = attr.key.lowercase(Locale.ROOT)
-                if (key == "style" || key.startsWith("on")) {
-                    attrsToRemove.add(attr.key)
-                } else if (key in uriAttributes) {
-                    val isSafe = key != "srcdoc" &&
-                        EInkImageOptimizer.isSafeHtmlUri(attr.value, allowRelative = true)
-                    if (!isSafe) {
-                        attrsToRemove.add(attr.key)
-                    }
+
+        for (el in doc.body().getAllElements().toList()) {
+            if (el == doc.body() || el.parent() == null) continue
+            val tag = el.tagName().lowercase(Locale.ROOT)
+            if (tag == "img") {
+                val rawSrc = el.attr("src").trim()
+                if (!EInkImageOptimizer.isSafeHtmlUri(rawSrc, allowRelative = false) || isTrackingPixel(rawSrc, el)) {
+                    el.remove()
+                    continue
                 }
+                val cleanSrc = UrlSanitizer.stripTrackingParams(rawSrc)
+                val alt = el.attr("alt")
+                for (attr in el.attributes().asList()) {
+                    el.removeAttr(attr.key)
+                }
+                el.attr("src", cleanSrc)
+                if (alt.isNotBlank()) {
+                    el.attr("alt", alt)
+                }
+                continue
             }
-            for (k in attrsToRemove) {
-                el.removeAttr(k)
+
+            if (tag !in ALLOWED_FEED_TAGS) {
+                el.unwrap()
+                continue
+            }
+
+            var cleanHref: String? = null
+            for (attr in el.attributes().asList()) {
+                val key = attr.key.lowercase(Locale.ROOT)
+                if (tag == "a" && key == "href" && EInkImageOptimizer.isSafeHtmlUri(attr.value, allowRelative = true)) {
+                    cleanHref = UrlSanitizer.stripTrackingParams(attr.value.trim())
+                }
+                el.removeAttr(attr.key)
+            }
+            if (cleanHref != null) {
+                el.attr("href", cleanHref)
             }
         }
         return doc.body().html().take(250_000)
@@ -144,7 +238,7 @@ class RssFeedParser {
         val channel = doc.select("channel").first() ?: doc
         val feedTitle = channel.select("> title").text().trim().ifBlank { "RSS Feed" }
         val feedDesc = channel.select("> description").text().trim().takeIf { it.isNotBlank() }
-        val feedLink = channel.select("> link").text().trim().takeIf { it.isNotBlank() }
+        val feedLink = channel.select("> link").text().trim().takeIf { it.isNotBlank() }?.let(UrlSanitizer::stripTrackingParams)
         val nextPageUrl = channel.select("atom\\:link[rel=next], atom10\\:link[rel=next], link[rel=next]").attr("href").trim().takeIf { it.isNotBlank() }
 
         val items = mutableListOf<RssItem>()
@@ -155,7 +249,7 @@ class RssFeedParser {
         }
         for (itemEl in doc.select("item")) {
             val title = itemEl.select("title").text().trim().ifBlank { unnamedArticleFallback }
-            val link = itemEl.select("link").text().trim()
+            val link = UrlSanitizer.stripTrackingParams(itemEl.select("link").text().trim())
             val author = itemEl.select("dc\\:creator, author").text().trim().takeIf { it.isNotBlank() }
             val pubDate = itemEl.select("pubDate").text().trim().takeIf { it.isNotBlank() }
 
@@ -173,15 +267,19 @@ class RssFeedParser {
 
             for (media in itemEl.select("enclosure[url], media\\:content[url]")) {
                 val url = media.attr("url")
-                if (url.startsWith("http://") || url.startsWith("https://")) {
-                    imageUrls.add(url)
+                val mediaType = media.attr("type").lowercase(Locale.ROOT)
+                if (mediaType.startsWith("audio/") || mediaType.startsWith("video/")) continue
+                if ((url.startsWith("http://") || url.startsWith("https://")) && !isTrackingPixel(url)) {
+                    imageUrls.add(UrlSanitizer.stripTrackingParams(url))
                 }
             }
 
-            for (img in parsedContent.select("img")) {
+            for (img in parsedContent.select("img").toList()) {
                 val src = img.absUrl("src").ifBlank { img.attr("src") }
-                if (src.startsWith("http://") || src.startsWith("https://")) {
-                    imageUrls.add(src)
+                if (isTrackingPixel(src, img)) {
+                    img.remove()
+                } else if (src.startsWith("http://") || src.startsWith("https://")) {
+                    imageUrls.add(UrlSanitizer.stripTrackingParams(src))
                 }
             }
 
@@ -231,7 +329,7 @@ class RssFeedParser {
         val feed = doc.select("feed").first() ?: doc
         val feedTitle = feed.select("> title").text().trim().ifBlank { "Atom Feed" }
         val feedDesc = feed.select("> subtitle").text().trim().takeIf { it.isNotBlank() }
-        val feedLink = feed.select("> link[rel=alternate], > link").attr("href").trim().takeIf { it.isNotBlank() }
+        val feedLink = feed.select("> link[rel=alternate], > link").attr("href").trim().takeIf { it.isNotBlank() }?.let(UrlSanitizer::stripTrackingParams)
         val nextPageUrl = feed.select("> link[rel=next]").attr("href").trim().takeIf { it.isNotBlank() }
 
         val items = mutableListOf<RssItem>()
@@ -242,7 +340,8 @@ class RssFeedParser {
         }
         for (entry in doc.select("entry")) {
             val title = entry.select("title").text().trim().ifBlank { unnamedArticleFallback }
-            val link = entry.select("link[rel=alternate]").attr("href").ifBlank { entry.select("link").attr("href") }.trim()
+            val rawLink = entry.select("link[rel=alternate]").attr("href").ifBlank { entry.select("link").attr("href") }.trim()
+            val link = UrlSanitizer.stripTrackingParams(rawLink)
             val author = entry.select("author > name").text().trim().takeIf { it.isNotBlank() }
             val pubDate = entry.select("published, updated").text().trim().takeIf { it.isNotBlank() }
 
@@ -257,10 +356,12 @@ class RssFeedParser {
 
             val parsedContent = Jsoup.parseBodyFragment(rawHtml)
             val imageUrls = mutableListOf<String>()
-            for (img in parsedContent.select("img")) {
+            for (img in parsedContent.select("img").toList()) {
                 val src = img.absUrl("src").ifBlank { img.attr("src") }
-                if (src.startsWith("http://") || src.startsWith("https://")) {
-                    imageUrls.add(src)
+                if (isTrackingPixel(src, img)) {
+                    img.remove()
+                } else if (src.startsWith("http://") || src.startsWith("https://")) {
+                    imageUrls.add(UrlSanitizer.stripTrackingParams(src))
                 }
             }
 

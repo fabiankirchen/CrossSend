@@ -178,7 +178,6 @@
     <string name="settings_privacy_dialog_close">Schließen</string>
 
     <!-- Sync Manager -->
-    <string name="sync_error_already_running">Synchronisation läuft bereits.</string>
     <string name="sync_status_checking_connection">Prüfe Verbindung zu CrossPoint…</string>
     <string name="sync_status_unreachable">CrossPoint nicht erreichbar</string>
     <string name="sync_error_webdav_unreachable">CrossPoint WebDAV-Server ist nicht erreichbar.</string>
@@ -213,4 +212,82 @@
     <string name="settings_xtch_color_scheme_desc">Legt fest, ob Webseiten im Hell- oder Dunkelmodus gerendert werden.</string>
     <string name="settings_xtch_color_scheme_light">Hell</string>
     <string name="settings_xtch_color_scheme_dark">Dunkel</string>
+
+    <!-- Smart Share BottomSheet -->
+    <string name="share_status_connected_ap">CrossPoint bereit (AP)</string>
+    <string name="share_status_connected_lan">CrossPoint bereit (WLAN)</string>
+    <string name="share_status_connecting">Suche CrossPoint…</string>
+    <string name="share_status_offline_queue">Reader offline · Warteschlange</string>
+    <string name="share_target_folder_label">Zielordner: %1$s</string>
+    <string name="share_remember_domain_label">Format für %1$s merken</string>
+    <string name="share_countdown_sending">Wird automatisch gesendet…</string>
+    <string name="share_countdown_stop">Stopp</string>
+    <string name="share_action_in_app_browser">In-App-Browser</string>
+    <string name="share_action_send_now">Jetzt senden</string>
+    <string name="share_action_queue_later">Später senden</string>
+    <string name="share_queued_for_later">Für CrossPoint vorgemerkt</string>
+    <string name="share_default_url_title">Web-Artikel</string>
+    <string name="share_default_note_title">Geteilte Notiz</string>
+    <plurals name="share_files_count">
+        <item quantity="one">%1$d Datei</item>
+        <item quantity="other">%1$d Dateien</item>
+    </plurals>
+
+    <!-- Home Status Strip, Offline Queue & Error Retry -->
+    <string name="main_sync_queued">Für Synchronisation vorgemerkt</string>
+    <string name="main_retry_queued">Erneuter Versand gestartet</string>
+    <string name="main_action_retry">Erneut senden</string>
+    <string name="main_empty_action_url">URL einfügen</string>
+    <string name="main_empty_action_file">Datei importieren</string>
+    <string name="main_empty_action_feeds">Feeds</string>
+    <string name="preview_sync_error_title">Übertragungsfehler</string>
+
+    <!-- Redesigned App Settings: Presets, Mini E-Ink Preview, Workflow & Storage -->
+    <string name="settings_section_presets">Lese-Profile &amp; Vorschau</string>
+    <string name="settings_preset_reading_focus">Lesefokus</string>
+    <string name="settings_preset_magazine">Magazin</string>
+    <string name="settings_preset_original_layout">Originallayout</string>
+    <string name="settings_preset_custom">Eigene</string>
+    <string name="settings_preview_eink_label">Live E-Ink-Vorschau</string>
+    <string name="settings_preview_badge_epub">EPUB · %1$d px · %2$d%%</string>
+    <string name="settings_preview_badge_xtch">XTCH · %1$d×%2$d · %3$d%% Zoom</string>
+    <string name="settings_preview_sample_title">Ruhiges Lesen auf E-Ink</string>
+    <string name="settings_preview_sample_body">Klare Typografie, abgestimmter Kontrast und ausgewogene Ränder machen lange Artikel auf jedem E-Ink-Display angenehm lesbar.</string>
+
+    <string name="settings_section_format_conversion">Format &amp; Konvertierung</string>
+    <string name="settings_default_format_label">Standard-Artikelformat</string>
+    <string name="settings_epub_typography_label">EPUB-Typografie</string>
+    <string name="settings_slider_font_scale">Schriftgröße: %1$d%%</string>
+    <string name="settings_slider_line_height">Zeilenabstand: %1$.2f</string>
+    <string name="settings_slider_margins">Seitenränder: %1$.2f em</string>
+    <string name="settings_image_optimization_label">E-Ink-Bildkomprimierung</string>
+    <string name="settings_slider_image_res">Max. Auflösung: %1$d px</string>
+    <string name="settings_slider_jpeg_quality">JPEG-Qualität: %1$d%%</string>
+    <string name="settings_domain_toggle_mode">Format wechseln</string>
+
+    <string name="settings_section_workflow_storage">Share-Flow, Ordner &amp; Speicher</string>
+    <string name="settings_share_flow_label">Beim Teilen eines Links oder einer Datei</string>
+    <string name="settings_share_flow_smart_sheet">Smart Sheet</string>
+    <string name="settings_share_flow_countdown">Auto (2s)</string>
+    <string name="settings_share_flow_instant">Sofort</string>
+    <string name="settings_share_flow_desc_smart">Zeigt Format, Zielordner und Reader-Status kompakt mit 1-Tap-Senden.</string>
+    <string name="settings_share_flow_desc_countdown">Sendet nach 2 Sekunden automatisch, sofern nicht gestoppt.</string>
+    <string name="settings_share_flow_desc_instant">Verarbeitet geteilte Inhalte ohne Dialog direkt im Hintergrund.</string>
+    <string name="settings_folders_label">Zielordner auf dem Reader</string>
+    <string name="settings_folder_articles">Ordner für Artikel</string>
+    <string name="settings_folder_books">Ordner für Bücher</string>
+    <string name="settings_folder_texts">Ordner für Notizen &amp; Texte</string>
+    <string name="settings_folders_saved">Zielordner gespeichert</string>
+    <string name="settings_strip_tracking_title">Tracking-Parameter entfernen</string>
+    <string name="settings_strip_tracking_desc">Entfernt utm_*, fbclid und ähnliche Parameter vor dem Abruf.</string>
+    <string name="settings_auto_delete_sync_title">Lokale Datei nach Versand löschen</string>
+    <string name="settings_auto_delete_sync_desc">Gibt nach der Übertragung Speicherplatz auf dem Handy frei.</string>
+    <string name="settings_cache_usage_label">Temporärer Cache: %1$s</string>
+    <string name="settings_clear_cache_btn">Cache leeren</string>
+    <string name="settings_cache_cleared_toast">%1$s Cache geleert</string>
+
+    <string name="settings_theme_label">Erscheinungsbild</string>
+    <string name="settings_theme_system">System</string>
+    <string name="settings_theme_light">Hell</string>
+    <string name="settings_theme_dark">Dunkel</string>
 </resources>

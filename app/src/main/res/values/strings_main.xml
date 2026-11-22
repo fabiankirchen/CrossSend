@@ -178,7 +178,6 @@
     <string name="settings_privacy_dialog_close">Close</string>
 
     <!-- Sync Manager -->
-    <string name="sync_error_already_running">Sync is already running.</string>
     <string name="sync_status_checking_connection">Checking connection to CrossPoint…</string>
     <string name="sync_status_unreachable">CrossPoint unreachable</string>
     <string name="sync_error_webdav_unreachable">CrossPoint WebDAV server is unreachable.</string>
@@ -213,4 +212,82 @@
     <string name="settings_xtch_color_scheme_desc">Choose whether web pages are rendered in Light or Dark mode.</string>
     <string name="settings_xtch_color_scheme_light">Light</string>
     <string name="settings_xtch_color_scheme_dark">Dark</string>
+
+    <!-- Smart Share BottomSheet -->
+    <string name="share_status_connected_ap">CrossPoint ready (AP)</string>
+    <string name="share_status_connected_lan">CrossPoint ready (LAN)</string>
+    <string name="share_status_connecting">Searching for CrossPoint…</string>
+    <string name="share_status_offline_queue">Reader offline · Will queue</string>
+    <string name="share_target_folder_label">Target folder: %1$s</string>
+    <string name="share_remember_domain_label">Remember format for %1$s</string>
+    <string name="share_countdown_sending">Sending automatically…</string>
+    <string name="share_countdown_stop">Stop</string>
+    <string name="share_action_in_app_browser">In-App Browser</string>
+    <string name="share_action_send_now">Send now</string>
+    <string name="share_action_queue_later">Queue for later</string>
+    <string name="share_queued_for_later">Queued for CrossPoint</string>
+    <string name="share_default_url_title">Web Article</string>
+    <string name="share_default_note_title">Shared Note</string>
+    <plurals name="share_files_count">
+        <item quantity="one">%1$d file</item>
+        <item quantity="other">%1$d files</item>
+    </plurals>
+
+    <!-- Home Status Strip, Offline Queue & Error Retry -->
+    <string name="main_sync_queued">Saved in queue for sync</string>
+    <string name="main_retry_queued">Queued for retry</string>
+    <string name="main_action_retry">Retry sync</string>
+    <string name="main_empty_action_url">Paste URL</string>
+    <string name="main_empty_action_file">Import File</string>
+    <string name="main_empty_action_feeds">Feeds</string>
+    <string name="preview_sync_error_title">Transfer error</string>
+
+    <!-- Redesigned App Settings: Presets, Mini E-Ink Preview, Workflow & Storage -->
+    <string name="settings_section_presets">Reading Presets &amp; Preview</string>
+    <string name="settings_preset_reading_focus">Reading Focus</string>
+    <string name="settings_preset_magazine">Magazine</string>
+    <string name="settings_preset_original_layout">Original Layout</string>
+    <string name="settings_preset_custom">Custom</string>
+    <string name="settings_preview_eink_label">Live E-Ink Preview</string>
+    <string name="settings_preview_badge_epub">EPUB · %1$d px · %2$d%%</string>
+    <string name="settings_preview_badge_xtch">XTCH · %1$d×%2$d · %3$d%% Zoom</string>
+    <string name="settings_preview_sample_title">Quiet Reading on E-Ink</string>
+    <string name="settings_preview_sample_body">Clean typography, calibrated contrast and gentle margins keep long articles effortless on any screen.</string>
+
+    <string name="settings_section_format_conversion">Format &amp; Conversion</string>
+    <string name="settings_default_format_label">Default article format</string>
+    <string name="settings_epub_typography_label">EPUB Typography</string>
+    <string name="settings_slider_font_scale">Text size: %1$d%%</string>
+    <string name="settings_slider_line_height">Line spacing: %1$.2f</string>
+    <string name="settings_slider_margins">Page margins: %1$.2f em</string>
+    <string name="settings_image_optimization_label">E-Ink Image Compression</string>
+    <string name="settings_slider_image_res">Max resolution: %1$d px</string>
+    <string name="settings_slider_jpeg_quality">JPEG quality: %1$d%%</string>
+    <string name="settings_domain_toggle_mode">Switch format</string>
+
+    <string name="settings_section_workflow_storage">Share Flow, Folders &amp; Storage</string>
+    <string name="settings_share_flow_label">When sharing a link or file</string>
+    <string name="settings_share_flow_smart_sheet">Smart Sheet</string>
+    <string name="settings_share_flow_countdown">Auto (2s)</string>
+    <string name="settings_share_flow_instant">Instant</string>
+    <string name="settings_share_flow_desc_smart">Shows format, folder and reader status in a compact 1-tap sheet.</string>
+    <string name="settings_share_flow_desc_countdown">Starts with a 2-second countdown and sends automatically unless stopped.</string>
+    <string name="settings_share_flow_desc_instant">Processes shared content directly in the background without a sheet.</string>
+    <string name="settings_folders_label">Target folders on reader</string>
+    <string name="settings_folder_articles">Articles folder</string>
+    <string name="settings_folder_books">Books folder</string>
+    <string name="settings_folder_texts">Notes &amp; texts folder</string>
+    <string name="settings_folders_saved">Target folders saved</string>
+    <string name="settings_strip_tracking_title">Strip tracking parameters</string>
+    <string name="settings_strip_tracking_desc">Removes utm_*, fbclid and similar trackers before fetching URLs.</string>
+    <string name="settings_auto_delete_sync_title">Delete local file after transfer</string>
+    <string name="settings_auto_delete_sync_desc">Frees phone storage after a document is synced to CrossPoint.</string>
+    <string name="settings_cache_usage_label">Temporary cache: %1$s</string>
+    <string name="settings_clear_cache_btn">Clear Cache</string>
+    <string name="settings_cache_cleared_toast">Cleared %1$s of cache</string>
+
+    <string name="settings_theme_label">App Appearance</string>
+    <string name="settings_theme_system">System</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
 </resources>

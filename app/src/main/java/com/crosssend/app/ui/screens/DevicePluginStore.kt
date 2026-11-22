@@ -718,10 +718,16 @@ internal fun PluginStoreSubpage(
 
     pendingThirdPartyInstall?.let { pending ->
         val externalDomain = extractHost(pending.base).ifBlank { pending.base }
+        val baseMsg = stringResource(R.string.dev_plugin_third_party_dialog_msg, pending.title, externalDomain)
+        val fullMsg = if (pending.sha256.isEmpty()) {
+            baseMsg + "\n\n" + stringResource(R.string.dev_plugin_no_checksum_warning)
+        } else {
+            baseMsg
+        }
         AlertDialog(
             onDismissRequest = { pendingThirdPartyInstall = null },
             title = { Text(stringResource(R.string.dev_plugin_third_party_dialog_title), fontWeight = FontWeight.Bold) },
-            text = { Text(stringResource(R.string.dev_plugin_third_party_dialog_msg, pending.title, externalDomain)) },
+            text = { Text(fullMsg) },
             confirmButton = {
                 Button(
                     onClick = {

@@ -7,10 +7,11 @@ import android.graphics.Canvas
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
-import android.util.Log
 import androidx.core.content.edit
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
+import com.crosssend.app.util.SafeLogger
+import com.crosssend.app.util.UrlSanitizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Dns
@@ -568,18 +569,35 @@ class EInkImageOptimizer(
     suspend fun optimizeImage(
         imageUrl: String,
         index: Int,
-        isCover: Boolean = false
+        isCover: Boolean = false,
+        maxDimOverride: Int? = null,
+        jpegQualityOverride: Int? = null
     ): OptimizedImage? = withContext(Dispatchers.IO) {
         if (!isSafeExternalImageUrl(imageUrl)) {
-            Log.w(tag, "Blocked unsafe image URL: $imageUrl")
+            SafeLogger.w(tag, "Blocked unsafe image URL: ${SafeLogger.redactUrl(imageUrl)}")
             return@withContext null
         }
+        val fetchUrl = UrlSanitizer.stripTrackingParams(
+            if (imageUrl.startsWith("http://", ignoreCase = true)) {
+                "https://" + imageUrl.substring(7)
+            } else {
+                imageUrl
+            }
+        )
+        if (!isSafeHttpsExternalUrl(fetchUrl)) {
+            SafeLogger.w(tag, "Blocked unsafe upgraded image URL: ${SafeLogger.redactUrl(fetchUrl)}")
+            return@withContext null
+        }
+
+        var originalBitmap: Bitmap? = null
+        var scaledBitmap: Bitmap? = null
+        var grayscaleBitmap: Bitmap? = null
         try {
-            val request = Request.Builder().url(imageUrl).build()
+            val request = Request.Builder().url(fetchUrl).build()
             val client = getSafeInternetClient(connectTimeoutSeconds = 10, readTimeoutSeconds = 15)
             val imageBytes = client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    Log.w(tag, "Failed to download image: $imageUrl, HTTP ${response.code}")
+                    SafeLogger.w(tag, "Failed to download image (${SafeLogger.redactUrl(fetchUrl)}), HTTP ${response.code}")
                     return@withContext null
                 }
 
@@ -587,7 +605,7 @@ class EInkImageOptimizer(
                 try {
                     readBoundedBytes(responseBody, 15L * 1024 * 1024)
                 } catch (e: Exception) {
-                    Log.w(tag, "Image exceeds byte limit ($imageUrl): ${e.message}")
+                    SafeLogger.w(tag, "Image exceeds byte limit (${SafeLogger.redactUrl(fetchUrl)})", e)
                     return@withContext null
                 }
             }
@@ -600,7 +618,8 @@ class EInkImageOptimizer(
             val rawHeight = options.outHeight
             if (rawWidth <= 0 || rawHeight <= 0) return@withContext null
 
-            val maxDim = if (isCover) maxCoverDimension else maxInlineDimension
+            val maxDim = (maxDimOverride ?: if (isCover) maxCoverDimension else maxInlineDimension).coerceIn(240, 1400)
+            val jpegQuality = (jpegQualityOverride ?: 60).coerceIn(35, 92)
 
             // 2. Downsample
             var sampleSize = 1
@@ -608,8 +627,11 @@ class EInkImageOptimizer(
                 sampleSize *= 2
             }
 
-            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-            val originalBitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOptions)
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            originalBitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOptions)
                 ?: return@withContext null
 
             // 3. Scale precisely
@@ -621,17 +643,17 @@ class EInkImageOptimizer(
             val targetWidth = (originalBitmap.width * scale).roundToInt().coerceAtLeast(1)
             val targetHeight = (originalBitmap.height * scale).roundToInt().coerceAtLeast(1)
 
-            val scaledBitmap = if (scale < 1.0f) {
+            scaledBitmap = if (scale < 1.0f) {
                 originalBitmap.scale(targetWidth, targetHeight)
             } else {
                 originalBitmap
             }
 
             // 4. Convert to Grayscale with E-Ink Contrast-Boost (Deeper blacks, crisp whites)
-            val grayscaleBitmap = createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
+            grayscaleBitmap = createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
             val canvas = Canvas(grayscaleBitmap)
             val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-            
+
             // Saturation 0 + Contrast Boost
             val satMatrix = ColorMatrix().apply { setSaturation(0f) }
             val contrast = 1.22f
@@ -654,7 +676,7 @@ class EInkImageOptimizer(
             val targetFile = File(imagesDir, diskFileName)
 
             FileOutputStream(targetFile).use { out ->
-                grayscaleBitmap.compress(Bitmap.CompressFormat.JPEG, 60, out)
+                grayscaleBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, out)
             }
 
             var colorCoverFile: File? = null
@@ -666,10 +688,6 @@ class EInkImageOptimizer(
                 colorCoverFile = colorFile
             }
 
-            if (scaledBitmap != originalBitmap) originalBitmap.recycle()
-            scaledBitmap.recycle()
-            grayscaleBitmap.recycle()
-
             OptimizedImage(
                 originalUrl = imageUrl,
                 localFile = targetFile,
@@ -679,10 +697,13 @@ class EInkImageOptimizer(
                 isCover = isCover,
                 colorCoverFile = colorCoverFile
             )
-
         } catch (e: Exception) {
-            Log.e(tag, "Error optimizing image $imageUrl", e)
+            SafeLogger.e(tag, "Error optimizing image ${SafeLogger.redactUrl(imageUrl)}", e)
             null
+        } finally {
+            if (grayscaleBitmap != null && !grayscaleBitmap.isRecycled) grayscaleBitmap.recycle()
+            if (scaledBitmap != null && scaledBitmap !== originalBitmap && !scaledBitmap.isRecycled) scaledBitmap.recycle()
+            if (originalBitmap != null && !originalBitmap.isRecycled) originalBitmap.recycle()
         }
     }
 
@@ -719,7 +740,7 @@ class EInkImageOptimizer(
                 BitmapFactory.decodeStream(stream, null, decodeOptions)
             }
         } catch (e: Exception) {
-            Log.e(tag, "Failed to decode bitmap from URI", e)
+            SafeLogger.e(tag, "Failed to decode bitmap from URI", e)
             null
         }
     }
@@ -769,32 +790,41 @@ class EInkImageOptimizer(
         val cropX = (maxOffsetX * clampedPanX).roundToInt().coerceIn(0, maxOffsetX)
         val cropY = (maxOffsetY * clampedPanY).roundToInt().coerceIn(0, maxOffsetY)
 
-        val cropped = Bitmap.createBitmap(source, cropX, cropY, cropWidth, cropHeight)
-        val scaled = cropped.scale(targetWidth, targetHeight)
-        if (cropped != source && cropped != scaled) {
-            cropped.recycle()
+        var cropped: Bitmap? = null
+        var scaled: Bitmap? = null
+        var resultBitmap: Bitmap? = null
+        return try {
+            cropped = Bitmap.createBitmap(source, cropX, cropY, cropWidth, cropHeight)
+            scaled = cropped.scale(targetWidth, targetHeight)
+            if (cropped !== source && cropped !== scaled && !cropped.isRecycled) {
+                cropped.recycle()
+            }
+            cropped = null
+
+            resultBitmap = createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
+            val canvas = Canvas(resultBitmap)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+            val satMatrix = ColorMatrix().apply { setSaturation(0f) }
+            val contrastMatrix = ColorMatrix(floatArrayOf(
+                contrast, 0f, 0f, 0f, brightness,
+                0f, contrast, 0f, 0f, brightness,
+                0f, 0f, contrast, 0f, brightness,
+                0f, 0f, 0f, 1f, 0f
+            ))
+            satMatrix.postConcat(contrastMatrix)
+            paint.colorFilter = ColorMatrixColorFilter(satMatrix)
+
+            canvas.drawBitmap(scaled, 0f, 0f, paint)
+            scaled.recycle()
+            scaled = null
+
+            applyAtkinsonDithering(resultBitmap)
+        } finally {
+            if (cropped != null && cropped !== source && !cropped.isRecycled) cropped.recycle()
+            if (scaled != null && scaled !== source && !scaled.isRecycled) scaled.recycle()
+            if (resultBitmap != null && !resultBitmap.isRecycled) resultBitmap.recycle()
         }
-
-        val resultBitmap = createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
-        val canvas = Canvas(resultBitmap)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-
-        val satMatrix = ColorMatrix().apply { setSaturation(0f) }
-        val contrastMatrix = ColorMatrix(floatArrayOf(
-            contrast, 0f, 0f, 0f, brightness,
-            0f, contrast, 0f, 0f, brightness,
-            0f, 0f, contrast, 0f, brightness,
-            0f, 0f, 0f, 1f, 0f
-        ))
-        satMatrix.postConcat(contrastMatrix)
-        paint.colorFilter = ColorMatrixColorFilter(satMatrix)
-
-        canvas.drawBitmap(scaled, 0f, 0f, paint)
-        scaled.recycle()
-
-        val ditheredBitmap = applyAtkinsonDithering(resultBitmap)
-        resultBitmap.recycle()
-        return ditheredBitmap
     }
 
     /**
@@ -827,29 +857,34 @@ class EInkImageOptimizer(
                 this.inSampleSize = sampleSize
                 inPreferredConfig = Bitmap.Config.RGB_565
             }
-            val originalBitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOptions)
-                ?: return null
+            var originalBitmap: Bitmap? = null
+            var processedBitmap: Bitmap? = null
+            try {
+                originalBitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOptions)
+                    ?: return null
 
-            val processedBitmap = processSleepScreenBitmap(
-                source = originalBitmap,
-                contrast = contrast,
-                brightness = brightness,
-                panX = panX,
-                panY = panY,
-                zoom = zoom,
-                targetWidth = w,
-                targetHeight = h
-            )
+                processedBitmap = processSleepScreenBitmap(
+                    source = originalBitmap,
+                    contrast = contrast,
+                    brightness = brightness,
+                    panX = panX,
+                    panY = panY,
+                    zoom = zoom,
+                    targetWidth = w,
+                    targetHeight = h
+                )
 
-            if (originalBitmap != processedBitmap) {
-                originalBitmap.recycle()
+                bitmapTo1BitBmp(processedBitmap)
+            } finally {
+                if (processedBitmap != null && processedBitmap !== originalBitmap && !processedBitmap.isRecycled) {
+                    processedBitmap.recycle()
+                }
+                if (originalBitmap != null && !originalBitmap.isRecycled) {
+                    originalBitmap.recycle()
+                }
             }
-
-            val bmpBytes = bitmapTo1BitBmp(processedBitmap)
-            processedBitmap.recycle()
-            bmpBytes
         } catch (e: Exception) {
-            Log.e(tag, "Failed to optimize sleep image", e)
+            SafeLogger.e(tag, "Failed to optimize sleep image", e)
             null
         }
     }
@@ -872,7 +907,7 @@ class EInkImageOptimizer(
             }
             true
         } catch (e: Exception) {
-            Log.e(tag, "Failed to save sleepscreen bitmap", e)
+            SafeLogger.e(tag, "Failed to save sleepscreen bitmap", e)
             false
         }
     }
@@ -886,6 +921,8 @@ class EInkImageOptimizer(
         isCover: Boolean = true,
         fileName: String = if (isCover) "cover.jpg" else "img_${System.currentTimeMillis()}.jpg"
     ): OptimizedImage? {
+        var scaledBitmap: Bitmap? = null
+        var grayscaleBitmap: Bitmap? = null
         return try {
             val rawWidth = source.width
             val rawHeight = source.height
@@ -902,14 +939,14 @@ class EInkImageOptimizer(
             val targetWidth = (rawWidth * scale).roundToInt().coerceAtLeast(1)
             val targetHeight = (rawHeight * scale).roundToInt().coerceAtLeast(1)
 
-            val scaledBitmap = if (scale < 1.0f) {
+            scaledBitmap = if (scale < 1.0f) {
                 source.scale(targetWidth, targetHeight)
             } else {
                 source
             }
 
             // Grayscale conversion with E-Ink Contrast-Boost
-            val grayscaleBitmap = createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
+            grayscaleBitmap = createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565)
             val canvas = Canvas(grayscaleBitmap)
             val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
@@ -943,9 +980,6 @@ class EInkImageOptimizer(
                 colorCoverFile = colorFile
             }
 
-            if (scaledBitmap != source) scaledBitmap.recycle()
-            grayscaleBitmap.recycle()
-
             OptimizedImage(
                 originalUrl = "pdf://first_page",
                 localFile = targetFile,
@@ -956,8 +990,11 @@ class EInkImageOptimizer(
                 colorCoverFile = colorCoverFile
             )
         } catch (e: Exception) {
-            Log.e(tag, "Error optimizing bitmap for E-Ink", e)
+            SafeLogger.e(tag, "Error optimizing bitmap for E-Ink", e)
             null
+        } finally {
+            if (grayscaleBitmap != null && !grayscaleBitmap.isRecycled) grayscaleBitmap.recycle()
+            if (scaledBitmap != null && scaledBitmap !== source && !scaledBitmap.isRecycled) scaledBitmap.recycle()
         }
     }
 }

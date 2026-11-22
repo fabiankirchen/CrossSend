@@ -1,6 +1,6 @@
 package com.crosssend.app.converter
 
-import android.util.Log
+import com.crosssend.app.util.SafeLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
@@ -22,10 +22,32 @@ data class ChapterData(
     val html: String
 )
 
+data class EpubStylingOptions(
+    val fontScale: Float = 1.0f,
+    val lineHeight: Float = 1.45f,
+    val marginEm: Float = 0.0f
+)
+
 class EpubBuilder {
+
+    companion object {
+        // DOS ZIP epoch starts in 1980; timestamps before 1980 cause OpenJDK ZipOutputStream
+        // to emit an extended timestamp extra field on STORED mimetype entries, breaking EPUB OCF.
+        private const val DETERMINISTIC_ZIP_TIME_MS = 1_577_880_000_000L
+    }
 
     private val isDe: Boolean
         get() = Locale.getDefault().language == "de"
+
+    private fun resolveLanguageCode(requestedLanguage: String?): String {
+        val normalized = requestedLanguage
+            ?.trim()
+            ?.split('-', '_')
+            ?.firstOrNull()
+            ?.lowercase(Locale.ROOT)
+            ?.takeIf { it.length in 2..3 && it.all(Char::isLetter) }
+        return normalized ?: if (isDe) "de" else "en"
+    }
 
     fun sanitizeTextForEpub(text: String?): String {
         if (text.isNullOrBlank()) return ""
@@ -66,10 +88,13 @@ class EpubBuilder {
         outputFile: File,
         wordCount: Int = 0,
         readingTimeMinutes: Int = 1,
-        publishedDate: Date? = null
+        publishedDate: Date? = null,
+        language: String? = null,
+        styling: EpubStylingOptions = EpubStylingOptions()
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             val bookId = UUID.randomUUID().toString()
+            val resolvedLanguage = resolveLanguageCode(language)
             val effectiveDate = publishedDate ?: Date()
             val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(effectiveDate)
             val cleanAuthor = author?.let { sanitizeTextForEpub(it) }
@@ -79,17 +104,14 @@ class EpubBuilder {
             val safeSubtitle = subtitle?.let { sanitizeTextForEpub(it).takeIf { s -> s.isNotBlank() } }
             val sanitizedHtml = sanitizeTextForEpub(contentHtml)
 
-            // 1. Inject local image relative paths with explicit width & height (speeds up pagination 5x)
-            var normalizedHtml = sanitizedHtml
-            val allImagesToReplace = mutableListOf<OptimizedImage>()
-            coverImage?.let { allImagesToReplace.add(it) }
-            allImagesToReplace.addAll(inlineImages)
+            val validCoverImage = coverImage?.takeIf { it.localFile.exists() }
+            val allImages = mutableListOf<OptimizedImage>()
+            validCoverImage?.let { allImages.add(it) }
+            allImages.addAll(inlineImages.filter { it.localFile.exists() })
 
-            for (img in allImagesToReplace) {
-                val replacement = "${img.relativePath}\" width=\"${img.width}\" height=\"${img.height}"
-                normalizedHtml = normalizedHtml.replace(img.originalUrl, replacement)
-                normalizedHtml = normalizedHtml.replace(img.originalUrl.replace("&", "&amp;"), replacement)
-            }
+            // 1. Parse DOM once, enforce defense-in-depth HTML sanitization, rewrite matched images to
+            // local EPUB relative paths with dimensions, and remove any unbundled external images.
+            val normalizedHtml = rewriteAndSanitizeBodyDom(sanitizedHtml, allImages)
 
             // 2. Parse and chunk content into ~65 KB chapters, splitting at <h2>/<h3> headings when appropriate
             val chapters = chunkContentIntoChapters(
@@ -101,12 +123,9 @@ class EpubBuilder {
                 wordCount = wordCount,
                 readingTimeMinutes = readingTimeMinutes,
                 publishedDate = publishedDate,
-                coverImage = coverImage
+                coverImage = validCoverImage,
+                language = resolvedLanguage
             )
-
-            val allImages = mutableListOf<OptimizedImage>()
-            coverImage?.let { allImages.add(it) }
-            allImages.addAll(inlineImages)
 
             ZipOutputStream(BufferedOutputStream(FileOutputStream(outputFile))).use { zip ->
                 // 1. mimetype (first entry, uncompressed STORED, zero extra attributes)
@@ -116,7 +135,7 @@ class EpubBuilder {
                     size = mimetypeBytes.size.toLong()
                     compressedSize = mimetypeBytes.size.toLong()
                     crc = CRC32().apply { update(mimetypeBytes) }.value
-                    time = 0
+                    time = DETERMINISTIC_ZIP_TIME_MS
                     extra = null
                 }
                 zip.putNextEntry(mimetypeEntry)
@@ -124,50 +143,128 @@ class EpubBuilder {
                 zip.closeEntry()
 
                 // 2. META-INF/container.xml
-                zip.putNextEntry(ZipEntry("META-INF/container.xml").apply { time = 0 })
+                zip.putNextEntry(ZipEntry("META-INF/container.xml").apply { time = DETERMINISTIC_ZIP_TIME_MS })
                 zip.write(createContainerXml().toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
 
                 // 3. OEBPS/style.css (Defensive, ultra-lightweight CSS for lightning-fast rendering)
-                zip.putNextEntry(ZipEntry("OEBPS/style.css").apply { time = 0 })
-                zip.write(createDefensiveEInkCss().toByteArray(Charsets.UTF_8))
+                zip.putNextEntry(ZipEntry("OEBPS/style.css").apply { time = DETERMINISTIC_ZIP_TIME_MS })
+                zip.write(createDefensiveEInkCss(styling).toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
 
                 // 4. OEBPS/chapter_*.xhtml (Start reading directly at chapter 1 without slow cover page)
                 for ((index, chapter) in chapters.withIndex()) {
                     val chapterNum = index + 1
-                    zip.putNextEntry(ZipEntry("OEBPS/chapter_$chapterNum.xhtml").apply { time = 0 })
+                    zip.putNextEntry(ZipEntry("OEBPS/chapter_$chapterNum.xhtml").apply { time = DETERMINISTIC_ZIP_TIME_MS })
                     zip.write(chapter.html.toByteArray(Charsets.UTF_8))
                     zip.closeEntry()
                 }
 
                 // 6. OEBPS/toc.ncx (Fast entry with chapter headings for easy navigation)
-                zip.putNextEntry(ZipEntry("OEBPS/toc.ncx").apply { time = 0 })
+                zip.putNextEntry(ZipEntry("OEBPS/toc.ncx").apply { time = DETERMINISTIC_ZIP_TIME_MS })
                 zip.write(createFastTocNcx(bookId, safeTitle, safeAuthor, chapters).toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
 
                 // 7. OEBPS/images
                 for (img in allImages) {
-                    if (img.localFile.exists()) {
-                        zip.putNextEntry(ZipEntry("OEBPS/${img.relativePath}").apply { time = 0 })
-                        img.localFile.inputStream().use { input ->
-                            input.copyTo(zip)
-                        }
-                        zip.closeEntry()
+                    zip.putNextEntry(ZipEntry("OEBPS/${img.relativePath}").apply { time = DETERMINISTIC_ZIP_TIME_MS })
+                    img.localFile.inputStream().use { input ->
+                        input.copyTo(zip)
                     }
+                    zip.closeEntry()
                 }
 
                 // 8. OEBPS/content.opf
-                zip.putNextEntry(ZipEntry("OEBPS/content.opf").apply { time = 0 })
-                zip.write(createContentOpf(bookId, safeTitle, safeAuthor, dateStr, coverImage, chapters.size, allImages).toByteArray(Charsets.UTF_8))
+                zip.putNextEntry(ZipEntry("OEBPS/content.opf").apply { time = DETERMINISTIC_ZIP_TIME_MS })
+                zip.write(
+                    createContentOpf(
+                        bookId = bookId,
+                        title = safeTitle,
+                        author = safeAuthor,
+                        date = dateStr,
+                        coverImage = validCoverImage,
+                        chapterCount = chapters.size,
+                        images = allImages,
+                        language = resolvedLanguage
+                    ).toByteArray(Charsets.UTF_8)
+                )
                 zip.closeEntry()
             }
 
             true
         } catch (e: Exception) {
-            Log.e("EpubBuilder", "Failed to build EPUB: ${e.message}", e)
+            SafeLogger.e("EpubBuilder", "Failed to build EPUB", e)
             false
         }
+    }
+
+    private fun rewriteAndSanitizeBodyDom(sanitizedHtml: String, existingImages: List<OptimizedImage>): String {
+        val bodyDoc = Jsoup.parseBodyFragment(sanitizedHtml)
+        bodyDoc.outputSettings()
+            .syntax(Document.OutputSettings.Syntax.xml)
+            .escapeMode(Entities.EscapeMode.xhtml)
+            .charset(Charsets.UTF_8)
+
+        bodyDoc.select(
+            "script, style, noscript, iframe, object, embed, form, input, button, " +
+                "canvas, video, audio, source, track, map, area, applet, base, meta, link"
+        ).remove()
+
+        // XHTML 1.1 does not support <mark>; convert to <strong> for strict reader compatibility.
+        for (markEl in bodyDoc.select("mark")) {
+            markEl.tagName("strong")
+        }
+
+        val imageByUrl = HashMap<String, OptimizedImage>(existingImages.size * 2)
+        for (img in existingImages) {
+            imageByUrl[img.originalUrl] = img
+            imageByUrl[img.originalUrl.replace("&amp;", "&")] = img
+            imageByUrl[img.relativePath] = img
+        }
+
+        for (imgEl in bodyDoc.select("img").toList()) {
+            val rawSrc = imgEl.attr("src").trim()
+            val matched = imageByUrl[rawSrc] ?: imageByUrl[rawSrc.replace("&amp;", "&")]
+            if (matched != null) {
+                val altText = imgEl.attr("alt")
+                for (attr in imgEl.attributes().asList()) {
+                    imgEl.removeAttr(attr.key)
+                }
+                imgEl.attr("src", matched.relativePath)
+                imgEl.attr("width", matched.width.toString())
+                imgEl.attr("height", matched.height.toString())
+                if (altText.isNotBlank()) {
+                    imgEl.attr("alt", altText)
+                } else {
+                    imgEl.attr("alt", "")
+                }
+            } else {
+                imgEl.remove()
+            }
+        }
+
+        val uriAttributes = setOf("href", "xlink:href", "formaction", "action", "data", "srcdoc")
+        for (el in bodyDoc.body().getAllElements()) {
+            if (el == bodyDoc.body()) continue
+            val tagLower = el.tagName().lowercase(Locale.ROOT)
+            if (tagLower == "img") continue
+            val toRemove = mutableListOf<String>()
+            for (attr in el.attributes()) {
+                val keyLower = attr.key.lowercase(Locale.ROOT)
+                if (keyLower == "style" || keyLower == "ping" || keyLower.startsWith("on")) {
+                    toRemove.add(attr.key)
+                } else if (keyLower in uriAttributes) {
+                    if (tagLower != "a" || keyLower != "href" || !EInkImageOptimizer.isSafeHtmlUri(attr.value, allowRelative = true)) {
+                        toRemove.add(attr.key)
+                    }
+                }
+            }
+            for (k in toRemove) {
+                el.removeAttr(k)
+            }
+        }
+
+        return bodyDoc.body().html()
     }
 
     private fun chunkContentIntoChapters(
@@ -179,7 +276,8 @@ class EpubBuilder {
         wordCount: Int,
         readingTimeMinutes: Int,
         publishedDate: Date? = null,
-        coverImage: OptimizedImage? = null
+        coverImage: OptimizedImage? = null,
+        language: String = if (isDe) "de" else "en"
     ): List<ChapterData> {
         val doc = Jsoup.parseBodyFragment(bodyHtml)
         val elements = doc.body().children()
@@ -241,7 +339,8 @@ class EpubBuilder {
                     isFirstChapter = isFirst,
                     bodyContent = currentChunk.toString(),
                     publishedDate = publishedDate,
-                    coverImage = coverImage
+                    coverImage = coverImage,
+                    language = language
                 )
                 chapters.add(ChapterData(title = currentChapterTitle, html = wrapped))
 
@@ -286,7 +385,8 @@ class EpubBuilder {
                         isFirstChapter = isFirst,
                         bodyContent = currentChunk.toString(),
                         publishedDate = publishedDate,
-                        coverImage = coverImage
+                        coverImage = coverImage,
+                        language = language
                     )
                     chapters.add(ChapterData(title = currentChapterTitle, html = wrapped))
 
@@ -312,7 +412,8 @@ class EpubBuilder {
                 isFirstChapter = isFirst,
                 bodyContent = currentChunk.toString(),
                 publishedDate = publishedDate,
-                coverImage = coverImage
+                coverImage = coverImage,
+                language = language
             )
             chapters.add(ChapterData(title = currentChapterTitle, html = wrapped))
         }
@@ -349,7 +450,8 @@ class EpubBuilder {
         isFirstChapter: Boolean,
         bodyContent: String,
         publishedDate: Date? = null,
-        coverImage: OptimizedImage? = null
+        coverImage: OptimizedImage? = null,
+        language: String = if (isDe) "de" else "en"
     ): String {
         // Extract clean domain or publication name if available
         val cleanDomain = extractDomain(sourceUrl)
@@ -412,10 +514,10 @@ class EpubBuilder {
             }
         }
 
-        val langCode = if (isDe) "de" else "en"
+        val langCode = language
         return """<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="$langCode" lang="$langCode">
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="$langCode">
 <head>
     <title>${escapeXml(cleanTitle)}</title>
     <link rel="stylesheet" type="text/css" href="style.css" />
@@ -436,15 +538,30 @@ class EpubBuilder {
     </rootfiles>
 </container>"""
 
+    private fun formatCssDecimal(value: Float): String {
+        val formatted = String.format(Locale.ROOT, "%.2f", value)
+        return formatted.trimEnd('0').trimEnd('.')
+    }
+
     /**
      * Defensive CSS: No justify, no complex margins, no font overriding.
      * Lets CrossPoint render at maximum hardware speed!
      */
-    private fun createDefensiveEInkCss(): String = """
+    private fun createDefensiveEInkCss(styling: EpubStylingOptions = EpubStylingOptions()): String {
+        val fontScale = styling.fontScale.coerceIn(0.85f, 1.35f)
+        val lineHeightStr = formatCssDecimal(styling.lineHeight.coerceIn(1.25f, 1.8f))
+        val marginEm = styling.marginEm.coerceIn(0f, 1.5f)
+        val marginRule = if (marginEm > 0.01f) "0 ${formatCssDecimal(marginEm)}em" else "0"
+        val fontSizeRule = if (kotlin.math.abs(fontScale - 1.0f) > 0.01f) {
+            "\n    font-size: ${(fontScale * 100f).toInt()}%;"
+        } else {
+            ""
+        }
+        return """
 body {
-    margin: 0;
-    padding: 0;
-    line-height: 1.45;
+    margin: $marginRule;
+    padding: 0;$fontSizeRule
+    line-height: $lineHeightStr;
     color: #000000;
 }
 a {
@@ -495,7 +612,7 @@ h3 {
 }
 p {
     margin: 0.45em 0;
-    line-height: 1.45;
+    line-height: $lineHeightStr;
     text-indent: 0;
 }
 blockquote {
@@ -551,6 +668,7 @@ code {
     font-size: 0.9em;
 }
 """.trimIndent()
+    }
 
     private fun createFastTocNcx(
         bookId: String,
@@ -558,7 +676,7 @@ code {
         author: String,
         chapters: List<ChapterData>
     ): String {
-        val maxNavPoints = 12
+        val maxNavPoints = 256
         val safeBookTitle = sanitizeTitleForEpub(title)
         val sectionPrefix = if (isDe) "Abschnitt" else "Section"
         val navPoints = chapters.take(maxNavPoints).mapIndexed { idx, ch ->
@@ -595,7 +713,8 @@ $navPoints
         date: String,
         coverImage: OptimizedImage?,
         chapterCount: Int,
-        images: List<OptimizedImage>
+        images: List<OptimizedImage>,
+        language: String = if (isDe) "de" else "en"
     ): String {
         val manifestItems = StringBuilder()
         val spineItems = StringBuilder()
@@ -618,7 +737,7 @@ $navPoints
             manifestItems.append("""        <item id="img_$index" href="${img.relativePath}" media-type="${img.mediaType}"/>""").append("\n")
         }
 
-        val langCode = if (isDe) "de" else "en"
+        val langCode = language
         return """<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="2.0">
     <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">

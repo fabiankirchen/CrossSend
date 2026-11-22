@@ -138,7 +138,7 @@
 
     <!-- App Settings Screen & Device Tabs -->
     <string name="settings_screen_title">App-Einstellungen</string>
-    <string name="settings_screen_subtitle">Reader-Modell, Originallayout &amp; Verbindung</string>
+    <string name="settings_screen_subtitle">Profile, Format, Ordner &amp; Verbindung</string>
     <string name="settings_section_device">Reader-Hardwareprofil</string>
     <string name="settings_device_dropdown_label">CrossPoint-Gerät</string>
     <string name="settings_device_dropdown_hint">Wähle dein Gerät für E-Ink-Bilder und Originallayout-Seiten (XTCH).</string>
@@ -176,6 +176,7 @@
     <string name="dev_plugin_third_party_badge">Drittanbieter-Host</string>
     <string name="dev_plugin_third_party_dialog_title">Drittanbieter-Plugin installieren?</string>
     <string name="dev_plugin_third_party_dialog_msg">„%1$s“ wird auf einem externen Server (%2$s) gehostet, nicht auf GitHub. Installiere nur Plugins aus vertrauenswürdigen Quellen.</string>
+    <string name="dev_plugin_no_checksum_warning">Hinweis: Dieser Katalog-Eintrag enthält keine SHA-256-Prüfsumme zur Integritätsprüfung.</string>
     <string name="dev_plugin_third_party_confirm">Trotzdem installieren</string>
     <string name="dev_plugin_checksum_mismatch">Prüfsummenprüfung für %1$s fehlgeschlagen</string>
     <string name="dev_plugin_cap_label">Berechtigungen: %1$s</string>

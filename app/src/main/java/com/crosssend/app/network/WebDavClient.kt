@@ -2,13 +2,15 @@ package com.crosssend.app.network
 
 import android.content.Context
 import android.net.Network
-import android.util.Log
 import android.util.Xml
 import androidx.core.content.edit
 import com.crosssend.app.converter.EInkImageOptimizer
+import com.crosssend.app.util.SafeLogger
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -32,7 +34,6 @@ import java.net.SocketTimeoutException
 import java.net.URI
 import java.net.URLEncoder
 import java.net.UnknownHostException
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -61,7 +62,7 @@ class WebDavClient(
             data class Unknown(val raw: String) : WsServerFrame()
         }
 
-        internal fun sanitizeRemotePath(rawPath: String): String {
+        fun sanitizeRemotePath(rawPath: String): String {
             val normalized = rawPath
                 .replace("\u0000", "")
                 .replace('\\', '/')
@@ -239,7 +240,7 @@ class WebDavClient(
     fun updateBaseUrl(newBaseUrl: String): Boolean {
         val normalized = LocalDeviceHostValidator.normalizeLocalDeviceUrl(newBaseUrl)
         if (normalized == null) {
-            Log.w(tag, "Rejected invalid or non-local WebDAV base URL")
+            SafeLogger.w(tag, "Rejected invalid or non-local WebDAV base URL")
             return false
         }
         this.baseUrl = normalized
@@ -279,7 +280,7 @@ class WebDavClient(
                 ok
             }
         } catch (e: Exception) {
-            Log.d(tag, "isReachable failed for $baseUrl: ${e.message}")
+            SafeLogger.d(tag, "isReachable failed for $baseUrl: ${e.message}")
             notifyIfUnreachable(e)
             false
         }
@@ -308,7 +309,7 @@ class WebDavClient(
             }
             return@withContext true
         } catch (e: Exception) {
-            Log.d(tag, "Native /mkdir failed, falling back to MKCOL: ${e.message}")
+            SafeLogger.d(tag, "Native /mkdir failed, falling back to MKCOL: ${e.message}")
         }
 
         // 2. Fallback to WebDAV MKCOL
@@ -360,14 +361,14 @@ class WebDavClient(
                             )
                         }
                         resolveWifiManager()?.onTransferProgress()
-                        Log.d(tag, "Native /api/files returned ${items.size} items")
+                        SafeLogger.d(tag, "Native /api/files returned ${items.size} items")
                         return@withContext Result.success(items)
                     }
                 }
             }
         } catch (e: Exception) {
             lastException = e
-            Log.d(tag, "Native /api/files failed, falling back to WebDAV: ${e.message}")
+            SafeLogger.d(tag, "Native /api/files failed, falling back to WebDAV: ${e.message}")
         }
 
         // 2. Fallback to WebDAV PROPFIND
@@ -395,7 +396,7 @@ class WebDavClient(
         try {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful && response.code != 207) {
-                    Log.e(tag, "PROPFIND failed with HTTP ${response.code}")
+                    SafeLogger.e(tag, "PROPFIND failed with HTTP ${response.code}")
                     return@withContext Result.failure(Exception("HTTP ${response.code} ($baseUrl)"))
                 }
 
@@ -405,7 +406,7 @@ class WebDavClient(
                 Result.success(parsePropfindXml(xmlBody, cleanPath))
             }
         } catch (e: Exception) {
-            Log.e(tag, "Error during PROPFIND", e)
+            SafeLogger.e(tag, "Error during PROPFIND", e)
             notifyIfUnreachable(e)
             lastException?.let { notifyIfUnreachable(it) }
             Result.failure(lastException ?: e)
@@ -429,9 +430,9 @@ class WebDavClient(
 
         val wsClient = getWebSocketClient()
 
-        val openLatch = CountDownLatch(1)
-        val readyLatch = CountDownLatch(1)
-        val doneLatch = CountDownLatch(1)
+        val openDeferred = CompletableDeferred<Boolean>()
+        val readyDeferred = CompletableDeferred<Boolean>()
+        val doneDeferred = CompletableDeferred<Boolean>()
         val wsFailed = AtomicBoolean(false)
         val wsSucceeded = AtomicBoolean(false)
         val wsClosed = AtomicBoolean(false)
@@ -440,14 +441,14 @@ class WebDavClient(
         val request = Request.Builder().url(wsUrl).build()
         val webSocket = wsClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                openLatch.countDown()
+                openDeferred.complete(true)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 when (val frame = parseWsServerFrame(text)) {
                     is WsServerFrame.Ready -> {
                         resolveWifiManager()?.onTransferProgress()
-                        readyLatch.countDown()
+                        readyDeferred.complete(true)
                     }
                     is WsServerFrame.Progress -> {
                         resolveWifiManager()?.onTransferProgress()
@@ -459,7 +460,7 @@ class WebDavClient(
                         resolveWifiManager()?.onTransferProgress()
                         wsSucceeded.set(true)
                         onProgress?.invoke(1f)
-                        doneLatch.countDown()
+                        doneDeferred.complete(true)
                         try {
                             webSocket.close(1000, "OK")
                         } catch (_: Exception) {}
@@ -467,15 +468,15 @@ class WebDavClient(
                     is WsServerFrame.Error -> {
                         wsErrorMsg.set(frame.message)
                         wsFailed.set(true)
-                        openLatch.countDown()
-                        readyLatch.countDown()
-                        doneLatch.countDown()
+                        openDeferred.complete(false)
+                        readyDeferred.complete(false)
+                        doneDeferred.complete(false)
                         try {
                             webSocket.close(1002, frame.message.take(120))
                         } catch (_: Exception) {}
                     }
                     is WsServerFrame.Unknown -> {
-                        Log.d(tag, "Ignoring unknown WS frame (length=${frame.raw.length})")
+                        SafeLogger.d(tag, "Ignoring unknown WS frame (length=${frame.raw.length})")
                     }
                 }
             }
@@ -488,24 +489,25 @@ class WebDavClient(
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 wsClosed.set(true)
-                openLatch.countDown()
-                readyLatch.countDown()
-                doneLatch.countDown()
+                openDeferred.complete(false)
+                readyDeferred.complete(false)
+                doneDeferred.complete(false)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 wsErrorMsg.set(t.message ?: "WebSocket failure")
                 wsFailed.set(true)
                 wsClosed.set(true)
-                openLatch.countDown()
-                readyLatch.countDown()
-                doneLatch.countDown()
+                openDeferred.complete(false)
+                readyDeferred.complete(false)
+                doneDeferred.complete(false)
             }
         })
 
         try {
-            if (!openLatch.await(WS_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS) || wsFailed.get() || wsClosed.get()) {
-                Log.d(tag, "WS port 81 connect failed/timed out (${wsErrorMsg.get()}), falling back to HTTP /upload")
+            val opened = withTimeoutOrNull(WS_CONNECT_TIMEOUT_MS) { openDeferred.await() } == true
+            if (!opened || wsFailed.get() || wsClosed.get()) {
+                SafeLogger.d(tag, "WS port 81 connect failed/timed out (${wsErrorMsg.get()}), falling back to HTTP /upload")
                 webSocket.cancel()
                 return false
             }
@@ -516,8 +518,9 @@ class WebDavClient(
                 return false
             }
 
-            if (!readyLatch.await(WS_READY_TIMEOUT_MS, TimeUnit.MILLISECONDS) || wsFailed.get() || wsClosed.get()) {
-                Log.d(tag, "WS READY timeout/error (${wsErrorMsg.get()}), falling back to HTTP /upload")
+            val ready = withTimeoutOrNull(WS_READY_TIMEOUT_MS) { readyDeferred.await() } == true
+            if (!ready || wsFailed.get() || wsClosed.get()) {
+                SafeLogger.d(tag, "WS READY timeout/error (${wsErrorMsg.get()}), falling back to HTTP /upload")
                 webSocket.cancel()
                 return false
             }
@@ -542,16 +545,17 @@ class WebDavClient(
                 }
             }
 
-            if (!doneLatch.await(WS_DONE_TIMEOUT_MS, TimeUnit.MILLISECONDS) || !wsSucceeded.get()) {
-                Log.d(tag, "WS DONE timeout/error (${wsErrorMsg.get()}), falling back to HTTP /upload")
+            val done = withTimeoutOrNull(WS_DONE_TIMEOUT_MS) { doneDeferred.await() } == true
+            if (!done || !wsSucceeded.get()) {
+                SafeLogger.d(tag, "WS DONE timeout/error (${wsErrorMsg.get()}), falling back to HTTP /upload")
                 webSocket.cancel()
                 return false
             }
 
-            Log.d(tag, "WebSocket upload succeeded")
+            SafeLogger.d(tag, "WebSocket upload succeeded")
             return true
-        } catch (e: Exception) {
-            Log.d(tag, "WS upload failed (${e.message}), falling back to HTTP /upload")
+        } catch (_: Exception) {
+            SafeLogger.d(tag, "WS upload failed, falling back to HTTP /upload")
             webSocket.cancel()
             return false
         }
@@ -618,13 +622,13 @@ class WebDavClient(
                 client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
                         wifiMgr?.onTransferProgress()
-                        Log.d(tag, "Native /upload succeeded")
+                        SafeLogger.d(tag, "Native /upload succeeded")
                         return@withContext true
                     }
                 }
             } catch (e: Exception) {
                 nativeException = e
-                Log.d(tag, "Native /upload failed, falling back to WebDAV PUT: ${e.message}")
+                SafeLogger.d(tag, "Native /upload failed, falling back to WebDAV PUT: ${e.message}")
             }
 
             // 3. Fallback to WebDAV PUT
@@ -672,11 +676,11 @@ class WebDavClient(
                     if (success) {
                         wifiMgr?.onTransferProgress()
                     }
-                    Log.d(tag, "WebDAV PUT returned ${response.code}, success: $success")
+                    SafeLogger.d(tag, "WebDAV PUT returned ${response.code}, success: $success")
                     success
                 }
             } catch (e: Exception) {
-                Log.e(tag, "Failed to upload file via WebDAV PUT", e)
+                SafeLogger.e(tag, "Failed to upload file via WebDAV PUT", e)
                 notifyIfUnreachable(e)
                 nativeException?.let { notifyIfUnreachable(it) }
                 false
@@ -730,7 +734,7 @@ class WebDavClient(
                             }
                         }
                         resolveWifiManager()?.onTransferProgress()
-                        Log.d(tag, "Native /download succeeded")
+                        SafeLogger.d(tag, "Native /download succeeded")
                         return@withContext true
                     }
                 }
@@ -738,7 +742,7 @@ class WebDavClient(
         } catch (e: Exception) {
             try { destinationFile.delete() } catch (_: Exception) {}
             nativeException = e
-            Log.d(tag, "Native /download failed, falling back to WebDAV GET: ${e.message}")
+            SafeLogger.d(tag, "Native /download failed, falling back to WebDAV GET: ${e.message}")
         }
 
         // 2. Fallback to WebDAV GET
@@ -750,7 +754,7 @@ class WebDavClient(
             val request = Request.Builder().url(url).get().build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    Log.e(tag, "WebDAV GET failed with HTTP ${response.code}")
+                    SafeLogger.e(tag, "WebDAV GET failed with HTTP ${response.code}")
                     return@withContext false
                 }
 
@@ -780,12 +784,12 @@ class WebDavClient(
                     }
                 }
                 resolveWifiManager()?.onTransferProgress()
-                Log.d(tag, "WebDAV GET download succeeded")
+                SafeLogger.d(tag, "WebDAV GET download succeeded")
                 true
             }
         } catch (e: Exception) {
             try { destinationFile.delete() } catch (_: Exception) {}
-            Log.e(tag, "Failed to download file via WebDAV GET", e)
+            SafeLogger.e(tag, "Failed to download file via WebDAV GET", e)
             notifyIfUnreachable(e)
             nativeException?.let { notifyIfUnreachable(it) }
             false
@@ -810,13 +814,13 @@ class WebDavClient(
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     resolveWifiManager()?.onTransferProgress()
-                    Log.d(tag, "Native /delete succeeded")
+                    SafeLogger.d(tag, "Native /delete succeeded")
                     return@withContext true
                 }
             }
         } catch (e: Exception) {
             nativeException = e
-            Log.d(tag, "Native /delete failed, falling back to WebDAV DELETE: ${e.message}")
+            SafeLogger.d(tag, "Native /delete failed, falling back to WebDAV DELETE: ${e.message}")
         }
 
         // 2. Fallback to WebDAV DELETE
@@ -831,11 +835,11 @@ class WebDavClient(
                 if (success) {
                     resolveWifiManager()?.onTransferProgress()
                 }
-                Log.d(tag, "WebDAV DELETE returned ${response.code}, success: $success")
+                SafeLogger.d(tag, "WebDAV DELETE returned ${response.code}, success: $success")
                 success
             }
         } catch (e: Exception) {
-            Log.e(tag, "Failed to delete remote file via WebDAV DELETE", e)
+            SafeLogger.e(tag, "Failed to delete remote file via WebDAV DELETE", e)
             notifyIfUnreachable(e)
             nativeException?.let { notifyIfUnreachable(it) }
             false

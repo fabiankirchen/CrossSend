@@ -1,23 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
-    <cloud-backup>
-        <exclude domain="database" path="crosssend_database" />
-        <exclude domain="database" path="crosssend_database-wal" />
-        <exclude domain="database" path="crosssend_database-shm" />
-        <exclude domain="sharedpref" path="crosspoint_prefs.xml" />
-        <exclude domain="sharedpref" path="crosssend_prefs.xml" />
-        <exclude domain="root" path="app_webview" />
-        <exclude domain="file" path="library" />
-        <exclude domain="file" path="debug_dumps" />
+    <cloud-backup disableIfNoEncryptionCapabilities="true">
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
     </cloud-backup>
     <device-transfer>
-        <exclude domain="database" path="crosssend_database" />
-        <exclude domain="database" path="crosssend_database-wal" />
-        <exclude domain="database" path="crosssend_database-shm" />
-        <exclude domain="sharedpref" path="crosspoint_prefs.xml" />
-        <exclude domain="sharedpref" path="crosssend_prefs.xml" />
-        <exclude domain="root" path="app_webview" />
-        <exclude domain="file" path="library" />
-        <exclude domain="file" path="debug_dumps" />
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
     </device-transfer>
 </data-extraction-rules>

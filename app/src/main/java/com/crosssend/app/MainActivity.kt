@@ -14,6 +14,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
@@ -29,6 +30,7 @@ import androidx.navigation.compose.rememberNavController
 import com.crosssend.app.converter.DocumentProcessor
 import com.crosssend.app.converter.EInkImageOptimizer
 import com.crosssend.app.data.model.RenderMode
+import com.crosssend.app.data.settings.AppThemeMode
 import com.crosssend.app.ui.components.ArticleWebViewDialog
 import com.crosssend.app.ui.screens.AppSettingsScreen
 import com.crosssend.app.ui.screens.ArchiveScreen
@@ -59,11 +61,6 @@ class MainActivity : ComponentActivity() {
             ) {
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED
-            ) {
-                add(Manifest.permission.NEARBY_WIFI_DEVICES)
-            }
             if (Build.VERSION.SDK_INT >= 37 &&
                 checkSelfPermission(PERMISSION_ACCESS_LOCAL_NETWORK) != PackageManager.PERMISSION_GRANTED
             ) {
@@ -77,7 +74,13 @@ class MainActivity : ComponentActivity() {
         val app = application as CrossSendApp
 
         setContent {
-            CrossSendTheme {
+            val appSettings by app.settingsRepository.settings.collectAsStateWithLifecycle()
+            val darkTheme = when (appSettings.themeMode) {
+                AppThemeMode.SYSTEM -> isSystemInDarkTheme()
+                AppThemeMode.LIGHT -> false
+                AppThemeMode.DARK -> true
+            }
+            CrossSendTheme(darkTheme = darkTheme) {
                 val resources = LocalResources.current
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val pendingWebReq by app.pendingWebViewRequest.collectAsStateWithLifecycle()

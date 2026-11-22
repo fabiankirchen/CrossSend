@@ -1,13 +1,15 @@
 package com.crosssend.app.converter
 
-import android.util.Log
+import android.webkit.CookieManager
+import com.crosssend.app.util.SafeLogger
+import com.crosssend.app.util.UrlSanitizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import android.webkit.CookieManager
-import okhttp3.Request
 import java.net.URL
 import java.util.Date
 import java.util.Locale
@@ -23,90 +25,135 @@ data class ExtractedArticle(
     val sourceUrl: String,
     val wordCount: Int = 0,
     val readingTimeMinutes: Int = 1,
-    val publishedDate: Date? = null
+    val publishedDate: Date? = null,
+    val language: String? = null
 )
 
 class PaywallOrLoginRequiredException(val url: String, val articleTitle: String?) :
     Exception(
-        if (java.util.Locale.getDefault().language == "de") {
-            "Anmeldung erforderlich für: ${articleTitle ?: url}"
+        if (Locale.getDefault().language == "de") {
+            "Anmeldung erforderlich für: ${articleTitle ?: SafeLogger.redactUrl(url)}"
         } else {
-            "Login required for: ${articleTitle ?: url}"
+            "Login required for: ${articleTitle ?: SafeLogger.redactUrl(url)}"
         }
     )
 
 class ArticleExtractor {
     private val tag = "ArticleExtractor"
 
-    private fun getHttpClient() = EInkImageOptimizer.getSafeInternetClient(
+    private sealed interface FetchOutcome {
+        data class Success(val html: String, val effectiveUrl: String) : FetchOutcome
+        data class Unauthorized(val code: Int) : FetchOutcome
+    }
+
+    private fun getStatelessHttpClient(): OkHttpClient = EInkImageOptimizer.getSafeInternetClient(
+        connectTimeoutSeconds = 20,
+        readTimeoutSeconds = 25,
+        followRedirects = true
+    )
+
+    private fun getCookieHttpClient(): OkHttpClient = EInkImageOptimizer.getSafeInternetClient(
         connectTimeoutSeconds = 20,
         readTimeoutSeconds = 25,
         followRedirects = true,
         extraNetworkInterceptor = sameOriginCookieInterceptor
     )
 
-    suspend fun extractFromUrl(url: String): ExtractedArticle = withContext(Dispatchers.IO) {
-        extractFromUrlWithRaw(url).first
+    private fun hasCookiesForUrl(url: String): Boolean = try {
+        !CookieManager.getInstance().getCookie(url).isNullOrBlank()
+    } catch (_: Throwable) {
+        false
     }
 
-    suspend fun extractFromUrlWithRaw(url: String): Pair<ExtractedArticle, String> = withContext(Dispatchers.IO) {
-        require(EInkImageOptimizer.isSafeHttpsExternalUrl(url)) {
-            if (java.util.Locale.getDefault().language == "de") {
+    private fun buildArticleRequest(url: String): Request = Request.Builder()
+        .url(url)
+        .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("Accept-Language", "en-US,en;q=0.9,de;q=0.8")
+        .header("Upgrade-Insecure-Requests", "1")
+        .build()
+
+    private fun executeFetch(client: OkHttpClient, targetUrl: String): FetchOutcome {
+        return client.newCall(buildArticleRequest(targetUrl)).execute().use { response ->
+            if (response.code in listOf(401, 403)) {
+                return@use FetchOutcome.Unauthorized(response.code)
+            }
+            if (!response.isSuccessful) {
+                throw java.io.IOException("HTTP ${response.code} from ${SafeLogger.redactUrl(targetUrl)}")
+            }
+            val html = response.body?.let { EInkImageOptimizer.readBoundedString(it, 10L * 1024 * 1024) } ?: ""
+            FetchOutcome.Success(html, UrlSanitizer.stripTrackingParams(response.request.url.toString()))
+        }
+    }
+
+    private fun blockedMessage(code: Int): String = if (Locale.getDefault().language == "de") {
+        "Zugriff verweigert (HTTP $code)"
+    } else {
+        "Access denied (HTTP $code)"
+    }
+
+    suspend fun extractFromUrl(url: String, stripTracking: Boolean = true): ExtractedArticle = withContext(Dispatchers.IO) {
+        extractFromUrlWithRaw(url, stripTracking).first
+    }
+
+    suspend fun extractFromUrlWithRaw(url: String, stripTracking: Boolean = true): Pair<ExtractedArticle, String> = withContext(Dispatchers.IO) {
+        val targetUrl = if (stripTracking) UrlSanitizer.stripTrackingParams(url) else url.trim()
+        require(EInkImageOptimizer.isSafeHttpsExternalUrl(targetUrl)) {
+            if (Locale.getDefault().language == "de") {
                 "Ungültige oder interne URL blockiert."
             } else {
                 "Invalid or internal URL blocked."
             }
         }
-        val client = getHttpClient()
-        val reqBuilder = Request.Builder()
-            .url(url)
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-            .header("Accept-Language", "en-US,en;q=0.9,de;q=0.8")
-            .header("Sec-Ch-Ua", "\"Chromium\";v=\"128\", \"Google Chrome\";v=\"128\"")
-            .header("Sec-Ch-Ua-Mobile", "?1")
-            .header("Sec-Ch-Ua-Platform", "\"Android\"")
-            .header("Sec-Fetch-Dest", "document")
-            .header("Sec-Fetch-Mode", "navigate")
-            .header("Sec-Fetch-Site", "none")
-            .header("Sec-Fetch-User", "?1")
-            .header("Upgrade-Insecure-Requests", "1")
 
-        val (rawHtml, effectiveUrl) = client.newCall(reqBuilder.build()).execute().use { response ->
-            if (response.code in listOf(401, 403)) {
-                val blockedMsg = if (java.util.Locale.getDefault().language == "de") {
-                    "Zugriff verweigert (HTTP ${response.code})"
-                } else {
-                    "Access denied (HTTP ${response.code})"
-                }
-                throw PaywallOrLoginRequiredException(url, blockedMsg)
+        var usedCookies = false
+        var fetchResult = executeFetch(getStatelessHttpClient(), targetUrl)
+        if (fetchResult is FetchOutcome.Unauthorized) {
+            if (hasCookiesForUrl(targetUrl)) {
+                usedCookies = true
+                fetchResult = executeFetch(getCookieHttpClient(), targetUrl)
             }
-            if (!response.isSuccessful) {
-                throw java.io.IOException("HTTP ${response.code} from $url")
+            if (fetchResult is FetchOutcome.Unauthorized) {
+                throw PaywallOrLoginRequiredException(targetUrl, blockedMessage(fetchResult.code))
             }
-
-            val html = response.body?.let { EInkImageOptimizer.readBoundedString(it, 10L * 1024 * 1024) } ?: ""
-            html to response.request.url.toString()
         }
-        val doc = Jsoup.parse(rawHtml, effectiveUrl)
 
-        var article = extractFromDocument(doc, effectiveUrl)
-
-        // Academic / Galley iframe viewer following:
-        // If extracted content is nearly empty (< 100 words) and page contains an iframe pointing to document/article view, follow it!
+        var success = fetchResult as FetchOutcome.Success
+        var doc = Jsoup.parse(success.html, success.effectiveUrl)
+        var article = extractFromDocument(doc, success.effectiveUrl)
         if (article.wordCount < 100) {
-            article = tryFollowContentIframe(doc, effectiveUrl, article)
+            article = tryFollowContentIframe(doc, success.effectiveUrl, article, useCookies = usedCookies)
         }
 
-        // Check if extracted article appears to be truncated by a paywall / login gate
         if (isPaywallDetected(doc, article.contentHtml, article.wordCount)) {
-            throw PaywallOrLoginRequiredException(url, article.title)
+            val cookieAvailable = hasCookiesForUrl(targetUrl) || hasCookiesForUrl(success.effectiveUrl)
+            if (!usedCookies && cookieAvailable) {
+                usedCookies = true
+                val retryResult = executeFetch(getCookieHttpClient(), targetUrl)
+                if (retryResult is FetchOutcome.Unauthorized) {
+                    throw PaywallOrLoginRequiredException(targetUrl, blockedMessage(retryResult.code))
+                }
+                success = retryResult as FetchOutcome.Success
+                doc = Jsoup.parse(success.html, success.effectiveUrl)
+                article = extractFromDocument(doc, success.effectiveUrl)
+                if (article.wordCount < 100) {
+                    article = tryFollowContentIframe(doc, success.effectiveUrl, article, useCookies = true)
+                }
+            }
+            if (isPaywallDetected(doc, article.contentHtml, article.wordCount)) {
+                throw PaywallOrLoginRequiredException(targetUrl, article.title)
+            }
         }
 
-        Pair(article, rawHtml)
+        Pair(article, success.html)
     }
 
-    private suspend fun tryFollowContentIframe(doc: Document, baseUrl: String, currentArticle: ExtractedArticle): ExtractedArticle = withContext(Dispatchers.IO) {
+    private suspend fun tryFollowContentIframe(
+        doc: Document,
+        baseUrl: String,
+        currentArticle: ExtractedArticle,
+        useCookies: Boolean = false
+    ): ExtractedArticle = withContext(Dispatchers.IO) {
         val nonContentHosts = listOf(
             "youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com",
             "facebook.com", "instagram.com", "google.com", "recaptcha",
@@ -114,7 +161,7 @@ class ArticleExtractor {
             "paypal.com", "spotify.com", "soundcloud.com"
         )
         val iframeCandidates = doc.select("iframe[src]").map {
-            it.absUrl("src").ifBlank { it.attr("src") }.trim()
+            UrlSanitizer.stripTrackingParams(it.absUrl("src").ifBlank { it.attr("src") }.trim())
         }
         val contentIframeUrl = iframeCandidates.firstOrNull { iframeUrl ->
             EInkImageOptimizer.isSafeHttpsExternalUrl(iframeUrl) &&
@@ -122,18 +169,19 @@ class ArticleExtractor {
         } ?: return@withContext currentArticle
 
         try {
-            val client = getHttpClient()
-            val reqBuilder = Request.Builder()
+            val client = if (useCookies && hasCookiesForUrl(contentIframeUrl)) getCookieHttpClient() else getStatelessHttpClient()
+            val req = Request.Builder()
                 .url(contentIframeUrl)
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .header("Accept-Language", "en-US,en;q=0.9,de;q=0.8")
+                .build()
 
-            val (iframeHtml, iframeEffectiveUrl) = client.newCall(reqBuilder.build()).execute().use { resp ->
+            val (iframeHtml, iframeEffectiveUrl) = client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext currentArticle
 
                 val html = resp.body?.let { EInkImageOptimizer.readBoundedString(it, 10L * 1024 * 1024) } ?: ""
-                html to resp.request.url.toString()
+                html to UrlSanitizer.stripTrackingParams(resp.request.url.toString())
             }
             val iframeDoc = Jsoup.parse(iframeHtml, iframeEffectiveUrl)
             val iframeArticle = extractFromDocument(iframeDoc, iframeEffectiveUrl)
@@ -151,15 +199,12 @@ class ArticleExtractor {
                     sourceUrl = baseUrl,
                     wordCount = iframeArticle.wordCount,
                     readingTimeMinutes = iframeArticle.readingTimeMinutes,
-                    publishedDate = currentArticle.publishedDate ?: iframeArticle.publishedDate
+                    publishedDate = currentArticle.publishedDate ?: iframeArticle.publishedDate,
+                    language = currentArticle.language ?: iframeArticle.language
                 )
             }
         } catch (e: Exception) {
-            try {
-                Log.w(tag, "Failed to follow content iframe: $contentIframeUrl", e)
-            } catch (_: Throwable) {
-                // android.util.Log is unmocked in plain JVM unit tests
-            }
+            SafeLogger.w(tag, "Failed to follow content iframe: ${SafeLogger.redactUrl(contentIframeUrl)}", e)
         }
 
         currentArticle
@@ -207,17 +252,34 @@ class ArticleExtractor {
     }
 
     private fun extractFromDocument(doc: Document, sourceUrl: String): ExtractedArticle {
-        // 0. Infer canonical sourceUrl if missing or default
+        // 0. Infer canonical sourceUrl and document language
+        val rawLanguage = doc.selectFirst("html")?.attr("lang")?.ifBlank {
+            doc.selectFirst("html")?.attr("xml:lang").orEmpty()
+        }?.ifBlank {
+            doc.selectFirst("meta[property=og:locale]")?.attr("content").orEmpty()
+        }?.ifBlank {
+            doc.selectFirst("meta[http-equiv=content-language]")?.attr("content").orEmpty()
+        }
+        val detectedLanguage = rawLanguage
+            ?.trim()
+            ?.replace('_', '-')
+            ?.split('-', ',')
+            ?.firstOrNull()
+            ?.trim()
+            ?.lowercase(Locale.ROOT)
+            ?.takeIf { it.length in 2..3 && it.all(Char::isLetter) }
+
         val canonicalUrl = doc.select("link[rel=canonical]").attr("href").ifBlank {
             doc.select("meta[property=og:url]").attr("content").ifBlank {
                 doc.select("meta[name=twitter:url]").attr("content")
             }
         }.trim().takeIf { it.startsWith("http://") || it.startsWith("https://") }
-        val effectiveSourceUrl = if (canonicalUrl != null && (sourceUrl.isBlank() || sourceUrl.contains("local"))) {
+        val rawEffectiveSourceUrl = if (canonicalUrl != null && (sourceUrl.isBlank() || sourceUrl.contains("local"))) {
             canonicalUrl
         } else {
             sourceUrl
         }
+        val effectiveSourceUrl = UrlSanitizer.stripTrackingParams(rawEffectiveSourceUrl)
 
         // 1. Title Extraction
         var rawTitle = doc.select("meta[property=og:title]").attr("content").ifBlank {
@@ -699,10 +761,11 @@ class ArticleExtractor {
             leadImageUrl = leadImageUrl,
             contentHtml = cleanHtml,
             imageUrls = inlineImageUrls.distinct(),
-            sourceUrl = sourceUrl,
+            sourceUrl = effectiveSourceUrl,
             wordCount = wordCount,
             readingTimeMinutes = readingTimeMinutes,
-            publishedDate = publishedDate
+            publishedDate = publishedDate,
+            language = detectedLanguage
         )
     }
 
@@ -719,7 +782,6 @@ class ArticleExtractor {
      */
     private fun sanitizeInlineFormatting(element: Element): String {
         val allowedTags = setOf("strong", "b", "em", "i", "code", "a", "del", "s", "mark", "sub", "sup")
-        val uriAttributes = setOf("href", "src", "xlink:href", "formaction", "action", "data", "srcdoc")
         val clone = element.clone()
         clone.select("img, script, style, noscript, iframe, object, embed, form, input, button").remove()
 
@@ -727,18 +789,21 @@ class ArticleExtractor {
             if (child == clone) continue
             val tagLower = child.tagName().lowercase(Locale.ROOT)
             val attrsToRemove = mutableListOf<String>()
+            var sanitizedHref: String? = null
             for (attr in child.attributes()) {
                 val keyLower = attr.key.lowercase(Locale.ROOT)
-                if (keyLower == "style" || keyLower == "class" || keyLower == "id" || keyLower.startsWith("on")) {
+                if (tagLower == "a" && keyLower == "href" && EInkImageOptimizer.isSafeHtmlUri(attr.value, allowRelative = true)) {
+                    sanitizedHref = UrlSanitizer.stripTrackingParams(attr.value.trim())
+                } else {
+                    // Strict attribute allowlist: strip style, class, id, on*, ping, data-*, etc.
                     attrsToRemove.add(attr.key)
-                } else if (keyLower in uriAttributes) {
-                    if (tagLower != "a" || keyLower != "href" || !EInkImageOptimizer.isSafeHtmlUri(attr.value, allowRelative = true)) {
-                        attrsToRemove.add(attr.key)
-                    }
                 }
             }
             for (attrKey in attrsToRemove) {
                 child.removeAttr(attrKey)
+            }
+            if (sanitizedHref != null) {
+                child.attr("href", sanitizedHref)
             }
             if (tagLower !in allowedTags) {
                 child.unwrap()

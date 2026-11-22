@@ -149,7 +149,11 @@
     <string name="proc_preview_acsm_footer">\nDiese Lizenzdatei wird für deinen E-Reader im Hauptverzeichnis (/) bereitgestellt.</string>
     <string name="proc_preview_acsm_fallback">ACSM-Lizenzdatei für E-Book.</string>
 
-    <!-- Share Handler Activity -->
+    <!-- Share Handler Activity & Background Workers -->
     <string name="share_receiving_content">Empfange Inhalt…</string>
     <string name="share_blocked_unsafe_uri">Zugriff auf interne App-Dateien verweigert.</string>
+    <string name="worker_share_processing_title">Verarbeite geteilten Inhalt…</string>
+    <string name="worker_sync_title">Synchronisiere mit CrossPoint…</string>
+    <string name="feeds_cd_auto_sync_on">Auto-Sync aktiviert</string>
+    <string name="feeds_cd_auto_sync_off">Auto-Sync pausiert</string>
 </resources>

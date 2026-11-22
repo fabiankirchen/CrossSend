@@ -5,14 +5,11 @@ import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +20,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
@@ -34,8 +32,12 @@ import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material3.AlertDialog
@@ -44,13 +46,13 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FabPosition
-import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -70,7 +72,9 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -92,6 +96,7 @@ import com.crosssend.app.ui.components.DocumentGridOrList
 import com.crosssend.app.ui.components.DocumentPreviewDialog
 import com.crosssend.app.ui.components.DocumentSelectionTopAppBar
 import com.crosssend.app.ui.components.QuickConnectionSettingsDialog
+import com.crosssend.app.ui.theme.LocalStatusColors
 import com.crosssend.app.ui.viewmodel.DocumentSortOrder
 import com.crosssend.app.ui.viewmodel.MainDocFilter
 import com.crosssend.app.ui.viewmodel.MainViewModel
@@ -110,6 +115,7 @@ fun MainScreen(
 ) {
     val context = LocalContext.current
     val resources = LocalResources.current
+    val haptics = LocalHapticFeedback.current
 
     val documents by viewModel.documents.collectAsStateWithLifecycle()
     val unsentCount by viewModel.unsentCount.collectAsStateWithLifecycle()
@@ -233,26 +239,34 @@ fun MainScreen(
 
                         val isConnected = connectionState is WifiConnectionState.ConnectedToCrossPointAp ||
                             connectionState is WifiConnectionState.ConnectedOnLocalNetwork
-                        AnimatedVisibility(
-                            visible = isConnected,
-                            enter = fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()) +
-                                scaleIn(initialScale = 0.8f, animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec()),
-                            exit = fadeOut(MaterialTheme.motionScheme.defaultEffectsSpec()) +
-                                scaleOut(targetScale = 0.8f, animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec())
-                        ) {
-                            val statusColors = com.crosssend.app.ui.theme.LocalStatusColors.current
-                            FilledTonalIconButton(
-                                onClick = onNavigateToDevice,
-                                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                    containerColor = statusColors.syncedContainer,
-                                    contentColor = statusColors.onSyncedContainer
-                                )
-                            ) {
+                        val isSearching = connectionState is WifiConnectionState.ConnectingToAp ||
+                            connectionState is WifiConnectionState.SearchingOnLan
+                        val statusColors = LocalStatusColors.current
+
+                        if (isConnected) {
+                            IconButton(onClick = onNavigateToDevice) {
                                 Icon(
                                     imageVector = Icons.Outlined.Devices,
                                     contentDescription = stringResource(R.string.main_nav_device),
+                                    tint = statusColors.synced,
                                     modifier = Modifier.size(20.dp)
                                 )
+                            }
+                        } else {
+                            IconButton(onClick = { showQuickSettingsDialog = true }) {
+                                if (isSearching) {
+                                    LoadingIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.WifiOff,
+                                        contentDescription = stringResource(R.string.conn_dialog_title),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
                         }
 
@@ -316,7 +330,7 @@ fun MainScreen(
                             }
                         }
 
-                        FilledTonalIconButton(
+                        IconButton(
                             onClick = { viewModel.toggleGridView() }
                         ) {
                             Icon(
@@ -326,7 +340,7 @@ fun MainScreen(
                             )
                         }
 
-                        FilledTonalIconButton(
+                        IconButton(
                             onClick = onNavigateToArchive
                         ) {
                             Icon(
@@ -345,9 +359,14 @@ fun MainScreen(
                     connectionState = connectionState,
                     isSyncing = isSyncing,
                     pendingUploadCount = unsentCount,
-                    onConnect = { viewModel.connectOrDiscover() },
-                    onOpenConnectionSettings = { showQuickSettingsDialog = true },
-                    onSync = { viewModel.triggerSync() },
+                    onConnect = {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.connectOrDiscover()
+                    },
+                    onSync = {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.triggerSync()
+                    },
                     onOpenSettings = onNavigateToSettings,
                     onSelectFeeds = onNavigateToFeeds,
                     onAddUrl = { showAddUrlDialog = true },
@@ -549,6 +568,57 @@ fun MainScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
                             )
+                            if (searchQuery.isBlank() && selectedFilter != MainDocFilter.UNSENT) {
+                                Spacer(modifier = Modifier.height(16.dp))
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    FilledTonalButton(onClick = { showAddUrlDialog = true }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Language,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(stringResource(R.string.main_empty_action_url))
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            filePickerLauncher.launch(
+                                                arrayOf(
+                                                    "application/epub+zip",
+                                                    "application/pdf",
+                                                    "text/markdown",
+                                                    "text/plain",
+                                                    "application/vnd.adobe.adept+xml",
+                                                    "application/x-adobe-adept+xml",
+                                                    "application/xml",
+                                                    "text/xml",
+                                                    "*/*"
+                                                )
+                                            )
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.UploadFile,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(stringResource(R.string.main_empty_action_file))
+                                    }
+                                    OutlinedButton(onClick = onNavigateToFeeds) {
+                                        Icon(
+                                            imageVector = Icons.Default.RssFeed,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(stringResource(R.string.main_empty_action_feeds))
+                                    }
+                                }
+                            }
                         }
                     }
                 } else {
@@ -572,7 +642,11 @@ fun MainScreen(
                                 viewModel.enterSelectionMode(doc.id)
                             }
                         },
-                        onDeleteDocument = { documentToDelete = it }
+                        onDeleteDocument = { documentToDelete = it },
+                        onRetryDocument = { doc ->
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.retryDocument(doc)
+                        }
                     )
                 }
             }
@@ -590,6 +664,10 @@ fun MainScreen(
             },
             onResendFromArchive = { archivedDoc ->
                 viewModel.resendDocument(archivedDoc)
+            },
+            onRetry = { failedDoc ->
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                viewModel.retryDocument(failedDoc)
             }
         )
     }

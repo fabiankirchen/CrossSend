@@ -3,6 +3,7 @@ package com.crosssend.app.converter
 import com.crosssend.app.data.local.DomainHostUtils
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -11,6 +12,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.charset.CodingErrorAction
 
 class XtcBuilderTest {
 
@@ -516,5 +518,160 @@ class XtcBuilderTest {
                 assertEquals("Footer pixel mismatch at ($x, $y)", expectedColor, pixels[y * w + x])
             }
         }
+    }
+
+    @Test
+    fun `buildXtch truncates multi-byte UTF-8 titles cleanly at character boundaries within 128-byte header field`() {
+        val w = 8
+        val h = 8
+        val pageBlob = XtcBuilder.encodeXthPage(w, h, ByteArray(w * h) { XtcBuilder.LEVEL_WHITE })
+        val titleOffset = XtcBuilder.HEADER_SIZE // Title is the first 128-byte field in the 256-byte metadata block
+        val titleMaxBytes = 128
+        val maxContentBytes = titleMaxBytes - 1
+
+        val cases = listOf(
+            // 125 ASCII + 'ä' (2B) = 127B; 'ö' (2B) would exceed 127B
+            ("a".repeat(125) + "äöß🎉") to ("a".repeat(125) + "ä"),
+            // 120 ASCII + "äöß" (6B) = 126B; 4-byte emoji '🎉' would reach 130B and must not be split
+            ("a".repeat(120) + "äöß🎉z") to ("a".repeat(120) + "äöß"),
+            // 124 ASCII + 4-byte emoji '🎉' = 128B (> 127B limit); emoji must be dropped cleanly
+            ("a".repeat(124) + "🎉äöüß") to "a".repeat(124)
+        )
+
+        cases.forEachIndexed { index, (inputTitle, expectedTruncated) ->
+            val outFile = tempFolder.newFile("utf8_title_boundary_$index.xtch")
+            try {
+                assertTrue(
+                    XtcBuilder.buildXtch(
+                        outputFile = outFile,
+                        title = inputTitle,
+                        author = "CrossSend",
+                        pages = listOf(pageBlob),
+                        width = w,
+                        height = h
+                    )
+                )
+
+                val fileBytes = outFile.readBytes()
+                assertTrue("XTCH file too small for header + metadata", fileBytes.size >= titleOffset + titleMaxBytes)
+                val titleBuffer = fileBytes.copyOfRange(titleOffset, titleOffset + titleMaxBytes)
+
+                // Every byte from the first NUL onward must be 0x00 (proper NUL termination within 128 bytes)
+                val firstNullIndex = titleBuffer.indexOf(0.toByte())
+                assertTrue("Title buffer must contain NUL terminator within 128 bytes", firstNullIndex in 0 until titleMaxBytes)
+                for (i in firstNullIndex until titleMaxBytes) {
+                    assertEquals("Expected NUL padding byte at title buffer index $i", 0.toByte(), titleBuffer[i])
+                }
+
+                val contentBytes = titleBuffer.copyOfRange(0, firstNullIndex)
+                assertTrue("UTF-8 content must not exceed $maxContentBytes bytes", contentBytes.size <= maxContentBytes)
+
+                val decoder = Charsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                val decodedTitle = decoder.decode(ByteBuffer.wrap(contentBytes)).toString()
+
+                assertFalse("Decoded title must not contain U+FFFD replacement character", decodedTitle.contains('\uFFFD'))
+                assertEquals(expectedTruncated, decodedTitle)
+            } finally {
+                outFile.delete()
+            }
+        }
+    }
+
+    @Test
+    fun `buildXtchFromPageFile produces byte-for-byte identical output to buildXtch`() {
+        val w = 480
+        val h = 800
+        val title = "Streaming XTCH Test — Ümlauts"
+        val author = "CrossSend Author"
+        val publisher = "CrossSend Pub"
+        val language = "de-DE"
+        val fixedCreateTimeSec = 1_700_000_000L
+
+        // 3 synthetic page blobs with distinct sizes (including > 32 KB copy buffer) and byte patterns
+        val pages = listOf(
+            ByteArray(128) { idx -> ((idx * 17 + 3) and 0xFF).toByte() },
+            ByteArray(1_025) { idx -> ((idx * 31 + 7) and 0xFF).toByte() },
+            ByteArray(40_000) { idx -> ((idx * 53 + 11) and 0xFF).toByte() }
+        )
+
+        val pageBlobFile = tempFolder.newFile("pages_stream.bin")
+        pageBlobFile.outputStream().use { out ->
+            pages.forEach { out.write(it) }
+        }
+        val pageSizes = pages.map { it.size }
+
+        // 1) Direct comparison against writeXtch with identical fixed createTimeSec
+        val expectedStreamBytes = java.io.ByteArrayOutputStream().apply {
+            assertTrue(
+                XtcBuilder.writeXtch(
+                    output = this,
+                    title = title,
+                    author = author,
+                    xthPages = pages,
+                    width = w,
+                    height = h,
+                    publisher = publisher,
+                    language = language,
+                    createTimeSec = fixedCreateTimeSec
+                )
+            )
+        }.toByteArray()
+
+        val actualFixedFile = tempFolder.newFile("streamed_fixed.xtch")
+        assertTrue(
+            XtcBuilder.buildXtchFromPageFile(
+                outputFile = actualFixedFile,
+                title = title,
+                author = author,
+                pageBlobFile = pageBlobFile,
+                pageSizes = pageSizes,
+                width = w,
+                height = h,
+                publisher = publisher,
+                language = language,
+                createTimeSec = fixedCreateTimeSec
+            )
+        )
+        assertArrayEquals(expectedStreamBytes, actualFixedFile.readBytes())
+
+        // 2) Direct comparison against buildXtch using the timestamp recorded in buildXtch's metadata header
+        val expectedFile = tempFolder.newFile("in_memory.xtch")
+        assertTrue(
+            XtcBuilder.buildXtch(
+                outputFile = expectedFile,
+                title = title,
+                author = author,
+                pages = pages,
+                width = w,
+                height = h,
+                publisher = publisher,
+                language = language
+            )
+        )
+        val expectedBytes = expectedFile.readBytes()
+        val createTimeOffset = XtcBuilder.HEADER_SIZE + 128 + 64 + 32 + 16
+        val recordedCreateTimeSec = ByteBuffer.wrap(expectedBytes, createTimeOffset, 4)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .int
+            .toLong() and 0xFFFFFFFFL
+
+        val actualFile = tempFolder.newFile("streamed.xtch")
+        assertTrue(
+            XtcBuilder.buildXtchFromPageFile(
+                outputFile = actualFile,
+                title = title,
+                author = author,
+                pageBlobFile = pageBlobFile,
+                pageSizes = pageSizes,
+                width = w,
+                height = h,
+                publisher = publisher,
+                language = language,
+                createTimeSec = recordedCreateTimeSec
+            )
+        )
+        assertArrayEquals(expectedBytes, actualFile.readBytes())
     }
 }

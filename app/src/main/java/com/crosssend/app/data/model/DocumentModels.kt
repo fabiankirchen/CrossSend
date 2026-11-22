@@ -30,4 +30,5 @@ enum class SyncStatus {
 sealed class SyncResult {
     data class Success(val uploadedCount: Int, val deletedCount: Int) : SyncResult()
     data class Error(val message: String) : SyncResult()
+    object Queued : SyncResult()
 }

@@ -17,7 +17,6 @@ import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import android.view.ContextThemeWrapper
 import android.view.View
 import android.view.ViewGroup
@@ -35,6 +34,7 @@ import androidx.core.graphics.get
 import androidx.core.net.toUri
 import com.crosssend.app.CrossSendApp
 import com.crosssend.app.util.DateUtils
+import com.crosssend.app.util.SafeLogger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -46,7 +46,9 @@ import org.json.JSONTokener
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
@@ -214,7 +216,9 @@ object WebPageXtchRenderer {
         title: String,
         author: String?
     ): XtchRenderResult? {
-        require(EInkImageOptimizer.isSafeHttpsExternalUrl(url)) { "Blocked unsafe URL for XTCH render: $url" }
+        require(EInkImageOptimizer.isSafeHttpsExternalUrl(url)) {
+            "Blocked unsafe URL for XTCH render: ${com.crosssend.app.util.SafeLogger.redactUrl(url)}"
+        }
         val (targetW, targetH) = EInkImageOptimizer.getTargetScreenDimensions(context)
         val zoomPercent = getWebZoomPercent(context)
         val zoomConfig = computeZoomViewportConfig(zoomPercent)
@@ -240,14 +244,17 @@ object WebPageXtchRenderer {
             }
         }
 
-        val xthPages = mutableListOf<ByteArray>()
+        val pageStreamFile = File.createTempFile("xtch_stream_", ".bin", context.cacheDir)
+        val pageOffsets = mutableListOf<Long>()
+        val pageSizes = mutableListOf<Int>()
         val pageFooterBgColors = mutableListOf<Int>()
         var pageTitle: String? = null
         var excerpt: String? = null
         var leadImageUrl: String? = null
         var publishedDate: Date? = null
 
-        val rendered = withContext(Dispatchers.Main) {
+        try {
+            val rendered = withContext(Dispatchers.Main) {
             val activeActivity = CrossSendApp.instance.currentActivityRef?.get()?.takeIf {
                 !it.isFinishing && !it.isDestroyed
             }
@@ -349,7 +356,7 @@ object WebPageXtchRenderer {
                     webView = wv
                     true
                 } catch (t: Throwable) {
-                    Log.w(TAG, "VirtualDisplay setup failed (${widthPx}x$heightPx @ ${dpi}dpi): ${t.message}")
+                    SafeLogger.w(TAG, "VirtualDisplay setup failed (${widthPx}x$heightPx @ ${dpi}dpi)", t)
                     try { webView?.destroy() } catch (_: Exception) {}
                     try { presentation?.dismiss() } catch (_: Exception) {}
                     try { virtualDisplay?.release() } catch (_: Exception) {}
@@ -414,7 +421,7 @@ object WebPageXtchRenderer {
                     if (!honoredVirtualDensity) {
                         val effectiveDensity = if (actualDpr > 0.5f) actualDpr else metrics.density.coerceAtLeast(1f)
                         val effectiveDpi = (effectiveDensity * 160f).roundToInt().coerceAtLeast(160)
-                        Log.i(
+                        SafeLogger.d(
                             TAG,
                             "WebView ignored 1:1 VirtualDisplay density (dpr=$actualDpr, innerW=$actualInnerW, expected=$virtualDensity); switching to ${effectiveDensity}x supersampled viewport"
                         )
@@ -485,6 +492,9 @@ object WebPageXtchRenderer {
                             return forbiddenResponse()
                         }
                         val host = reqUri.host ?: return forbiddenResponse()
+                        if (isTrackerHost(host)) {
+                            return emptyNoContentResponse()
+                        }
                         return try {
                             EInkImageOptimizer.ssrfSafeDns.lookup(host)
                             null
@@ -501,7 +511,7 @@ object WebPageXtchRenderer {
                 }
 
                 val safeHost = url.toUri().host ?: "(unknown)"
-                Log.i(TAG, "Loading page ($renderContextMode, ${viewW}x$viewH px, target ${targetW}x$targetH) from host=$safeHost")
+                SafeLogger.d(TAG, "Loading page ($renderContextMode, ${viewW}x$viewH px, target ${targetW}x$targetH) from host=$safeHost")
                 activeWebView.loadUrl(url)
                 withTimeoutOrNull(18_000L) { pageLoaded.await() }
                 evaluateJsString(
@@ -606,7 +616,7 @@ object WebPageXtchRenderer {
                             }
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "Failed to parse layout cuts JSON", e)
+                        SafeLogger.w(TAG, "Failed to parse layout cuts JSON", e)
                     }
                 }
 
@@ -738,12 +748,17 @@ object WebPageXtchRenderer {
                             }
                             if (image != null) {
                                 try {
-                                    capturedFromSurface = copyImageToBitmap(image, viewBitmap, viewW, viewH)
+                                    capturedFromSurface = withContext(Dispatchers.Default) {
+                                        copyImageToBitmap(image, viewBitmap, viewW, viewH)
+                                    }
                                 } finally {
                                     image.close()
                                 }
                             }
-                            if (capturedFromSurface && sliceExpectsContent && countNonWhitePixelsSampled(viewBitmap, useDarkWebMode) == 0) {
+                            if (capturedFromSurface && sliceExpectsContent && withContext(Dispatchers.Default) {
+                                    countNonWhitePixelsSampled(viewBitmap, useDarkWebMode) == 0
+                                }
+                            ) {
                                 // Compositor tile may still have been blank on first frame; wait briefly and retry
                                 activeWebView.invalidate()
                                 presentation?.window?.decorView?.postInvalidate()
@@ -756,7 +771,9 @@ object WebPageXtchRenderer {
                                 }
                                 if (retryImage != null) {
                                     try {
-                                        copyImageToBitmap(retryImage, viewBitmap, viewW, viewH)
+                                        withContext(Dispatchers.Default) {
+                                            copyImageToBitmap(retryImage, viewBitmap, viewW, viewH)
+                                        }
                                     } finally {
                                         retryImage.close()
                                     }
@@ -783,12 +800,14 @@ object WebPageXtchRenderer {
                             it.top < plannedEndCssY - 2f && it.bottom > plannedEndCssY + 2f
                         }
                         val finalBotViewPx = if (!isLastPage && layoutPlan != null && !cutInsideMedia) {
-                            refineCutRowOnBitmap(
-                                bitmap = viewBitmap,
-                                srcTopPx = srcTopViewPx,
-                                plannedBotPx = plannedBotViewPx,
-                                cssToViewScale = cssToViewScale
-                            )
+                            withContext(Dispatchers.Default) {
+                                refineCutRowOnBitmap(
+                                    bitmap = viewBitmap,
+                                    srcTopPx = srcTopViewPx,
+                                    plannedBotPx = plannedBotViewPx,
+                                    cssToViewScale = cssToViewScale
+                                )
+                            }
                         } else {
                             plannedBotViewPx
                         }
@@ -904,8 +923,10 @@ object WebPageXtchRenderer {
                         }
 
                         if (pageIndex == 0 || isLastPage || pageIndex == MAX_PAGES - 1) {
-                            val nonWhite = countNonWhitePixelsSampled(pageBitmap, useDarkWebMode)
-                            Log.i(TAG, "Page ${pageIndex + 1} drawn (surface=$capturedFromSurface, nonWhite=$nonWhite)")
+                            val nonWhite = withContext(Dispatchers.Default) {
+                                countNonWhitePixelsSampled(pageBitmap, useDarkWebMode)
+                            }
+                            SafeLogger.d(TAG, "Page ${pageIndex + 1} drawn (surface=$capturedFromSurface, nonWhite=$nonWhite)")
                         }
 
                         val pagePhotoRects = if (parsedMediaRects.isNotEmpty() && effectiveViewportCssW > 0f && viewH > 0) {
@@ -926,10 +947,16 @@ object WebPageXtchRenderer {
                             }
                         } else emptyList()
 
-                        val xthBlob = withContext(Dispatchers.Default) {
-                            XtcBuilder.bitmapToXthPage(pageBitmap, pagePhotoRects, xthScratch)
+                        val pageSize = withContext(Dispatchers.Default) {
+                            val xthBlob = XtcBuilder.bitmapToXthPage(pageBitmap, pagePhotoRects, xthScratch)
+                            withContext(Dispatchers.IO) {
+                                FileOutputStream(pageStreamFile, true).use { it.write(xthBlob) }
+                            }
+                            xthBlob.size
                         }
-                        xthPages.add(xthBlob)
+                        val nextOffset = if (pageOffsets.isEmpty()) 0L else pageOffsets.last() + pageSizes.last().toLong()
+                        pageOffsets.add(nextOffset)
+                        pageSizes.add(pageSize)
 
                         if (isLastPage) break
                         currentCssY = maxOf(actualEndCssY, currentCssY + 16f)
@@ -943,7 +970,7 @@ object WebPageXtchRenderer {
                 true
             } catch (e: Exception) {
                 val safeHost = url.toUri().host ?: "(unknown)"
-                Log.e(TAG, "WebView XTCH render failed for host=$safeHost", e)
+                SafeLogger.e(TAG, "WebView XTCH render failed for host=$safeHost", e)
                 false
             } finally {
                 try { presentation?.dismiss() } catch (_: Exception) {}
@@ -961,46 +988,52 @@ object WebPageXtchRenderer {
             }
         }
 
-        if (!rendered || xthPages.isEmpty()) {
-            return null
-        }
+            if (!rendered || pageSizes.isEmpty()) {
+                return null
+            }
 
-        if (showPageNumbers && xthPages.size > 1) {
-            withContext(Dispatchers.Default) {
-                stampPageNumbersOnXthPages(
-                    xthPages = xthPages,
-                    pageFooterBgColors = pageFooterBgColors,
-                    targetW = targetW,
-                    targetH = targetH,
-                    bottomMarginTargetPx = bottomMarginTargetPx
+            if (showPageNumbers && pageSizes.size > 1) {
+                withContext(Dispatchers.IO) {
+                    stampPageNumbersOnXthStreamFile(
+                        pageStreamFile = pageStreamFile,
+                        pageOffsets = pageOffsets,
+                        pageSizes = pageSizes,
+                        pageFooterBgColors = pageFooterBgColors,
+                        targetW = targetW,
+                        targetH = targetH,
+                        bottomMarginTargetPx = bottomMarginTargetPx
+                    )
+                }
+            }
+
+            val effectiveTitle = title.ifBlank { pageTitle ?: "Article" }
+            val built = withContext(Dispatchers.IO) {
+                XtcBuilder.buildXtchFromPageFile(
+                    outputFile = outputFile,
+                    title = effectiveTitle,
+                    author = author,
+                    pageBlobFile = pageStreamFile,
+                    pageSizes = pageSizes,
+                    width = targetW,
+                    height = targetH
                 )
             }
-        }
+            if (!built) {
+                return null
+            }
 
-        val effectiveTitle = title.ifBlank { pageTitle ?: "Article" }
-        val built = withContext(Dispatchers.IO) {
-            XtcBuilder.buildXtch(
-                outputFile = outputFile,
+            SafeLogger.d(TAG, "Successfully built XTCH (${outputFile.length()} bytes, ${pageSizes.size} pages)")
+            return XtchRenderResult(
+                pageCount = pageSizes.size,
                 title = effectiveTitle,
-                author = author,
-                pages = xthPages,
-                width = targetW,
-                height = targetH
+                excerpt = excerpt,
+                colorCoverFile = null,
+                leadImageUrl = leadImageUrl,
+                publishedDate = publishedDate
             )
+        } finally {
+            try { pageStreamFile.delete() } catch (_: Exception) {}
         }
-        if (!built) {
-            return null
-        }
-
-        Log.i(TAG, "Successfully built XTCH ${outputFile.name} (${outputFile.length()} bytes, ${xthPages.size} pages)")
-        return XtchRenderResult(
-            pageCount = xthPages.size,
-            title = effectiveTitle,
-            excerpt = excerpt,
-            colorCoverFile = null,
-            leadImageUrl = leadImageUrl,
-            publishedDate = publishedDate
-        )
     }
 
     private fun drainImageReader(reader: ImageReader) {
@@ -1036,7 +1069,7 @@ object WebPageXtchRenderer {
             }
             true
         } catch (e: Exception) {
-            Log.w(TAG, "copyImageToBitmap failed", e)
+            SafeLogger.w(TAG, "copyImageToBitmap failed", e)
             false
         }
     }
@@ -1180,6 +1213,51 @@ object WebPageXtchRenderer {
             y += stepY
         }
         return count
+    }
+
+    private val TRACKER_HOST_SUFFIXES = setOf(
+        "doubleclick.net",
+        "googlesyndication.com",
+        "google-analytics.com",
+        "googletagmanager.com",
+        "googleadservices.com",
+        "facebook.net",
+        "connect.facebook.net",
+        "pixel.facebook.com",
+        "scorecardresearch.com",
+        "quantserve.com",
+        "taboola.com",
+        "outbrain.com",
+        "criteo.com",
+        "adnxs.com",
+        "rubiconproject.com",
+        "pubmatic.com",
+        "amazon-adsystem.com",
+        "hotjar.com",
+        "segment.io",
+        "mixpanel.com",
+        "amplitude.com",
+        "newrelic.com",
+        "sentry.io",
+        "chartbeat.com",
+        "omtrdc.net"
+    )
+
+    internal fun isTrackerHost(host: String): Boolean {
+        val clean = host.trim().lowercase(Locale.ROOT)
+        if (clean.isEmpty()) return false
+        return TRACKER_HOST_SUFFIXES.any { suffix -> clean == suffix || clean.endsWith(".$suffix") }
+    }
+
+    private fun emptyNoContentResponse(): WebResourceResponse {
+        return WebResourceResponse(
+            "text/plain",
+            "utf-8",
+            204,
+            "No Content",
+            emptyMap(),
+            ByteArrayInputStream(ByteArray(0))
+        )
     }
 
     private fun forbiddenResponse(): WebResourceResponse {
@@ -3013,17 +3091,19 @@ object WebPageXtchRenderer {
         return out
     }
 
-    private fun stampPageNumbersOnXthPages(
-        xthPages: MutableList<ByteArray>,
+    private fun stampPageNumbersOnXthStreamFile(
+        pageStreamFile: File,
+        pageOffsets: List<Long>,
+        pageSizes: List<Int>,
         pageFooterBgColors: List<Int>,
         targetW: Int,
         targetH: Int,
         bottomMarginTargetPx: Int
     ) {
-        if (xthPages.size <= 1 || bottomMarginTargetPx < 16 || targetW <= 0 || targetH <= bottomMarginTargetPx) return
+        if (pageSizes.size <= 1 || bottomMarginTargetPx < 16 || targetW <= 0 || targetH <= bottomMarginTargetPx) return
         val footerStripH = (bottomMarginTargetPx - 2).coerceIn(14, targetH)
         val stripTopY = targetH - footerStripH
-        val totalPages = xthPages.size
+        val totalPages = pageSizes.size
         val footerBitmap = createBitmap(targetW, footerStripH)
         val stripPixels = IntArray(targetW * footerStripH)
         try {
@@ -3035,25 +3115,35 @@ object WebPageXtchRenderer {
             }
             val fm = textPaint.fontMetrics
             val baselineY = footerStripH / 2f - (fm.ascent + fm.descent) / 2f
-            for (i in xthPages.indices) {
-                val bgColor = pageFooterBgColors.getOrElse(i) { Color.WHITE }
-                canvas.drawColor(bgColor)
-                textPaint.color = when (bgColor) {
-                    Color.BLACK -> Color.WHITE
-                    Color.WHITE -> Color.rgb(85, 85, 85)
-                    else -> Color.BLACK
+            RandomAccessFile(pageStreamFile, "rw").use { raf ->
+                for (i in pageSizes.indices) {
+                    val pageSize = pageSizes[i]
+                    val pageOffset = pageOffsets[i]
+                    val blob = ByteArray(pageSize)
+                    raf.seek(pageOffset)
+                    raf.readFully(blob)
+
+                    val bgColor = pageFooterBgColors.getOrElse(i) { Color.WHITE }
+                    canvas.drawColor(bgColor)
+                    textPaint.color = when (bgColor) {
+                        Color.BLACK -> Color.WHITE
+                        Color.WHITE -> Color.rgb(85, 85, 85)
+                        else -> Color.BLACK
+                    }
+                    canvas.drawText("${i + 1} / $totalPages", targetW / 2f, baselineY, textPaint)
+                    footerBitmap.getPixels(stripPixels, 0, targetW, 0, 0, targetW, footerStripH)
+                    val stripLevels = XtcBuilder.pixelsToLevels(stripPixels, targetW, footerStripH)
+                    XtcBuilder.overlayStripLevelsOnXthPage(
+                        xthBlob = blob,
+                        width = targetW,
+                        height = targetH,
+                        stripTopY = stripTopY,
+                        stripHeight = footerStripH,
+                        stripLevels = stripLevels
+                    )
+                    raf.seek(pageOffset)
+                    raf.write(blob)
                 }
-                canvas.drawText("${i + 1} / $totalPages", targetW / 2f, baselineY, textPaint)
-                footerBitmap.getPixels(stripPixels, 0, targetW, 0, 0, targetW, footerStripH)
-                val stripLevels = XtcBuilder.pixelsToLevels(stripPixels, targetW, footerStripH)
-                XtcBuilder.overlayStripLevelsOnXthPage(
-                    xthBlob = xthPages[i],
-                    width = targetW,
-                    height = targetH,
-                    stripTopY = stripTopY,
-                    stripHeight = footerStripH,
-                    stripLevels = stripLevels
-                )
             }
         } finally {
             footerBitmap.recycle()

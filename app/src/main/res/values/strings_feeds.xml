@@ -149,7 +149,11 @@
     <string name="proc_preview_acsm_footer">\nThis license file is provided in the root directory (/) for your e-reader.</string>
     <string name="proc_preview_acsm_fallback">ACSM license file for e-book.</string>
 
-    <!-- Share Handler Activity -->
+    <!-- Share Handler Activity & Background Workers -->
     <string name="share_receiving_content">Receiving content…</string>
     <string name="share_blocked_unsafe_uri">Access to internal app files denied.</string>
+    <string name="worker_share_processing_title">Processing shared content…</string>
+    <string name="worker_sync_title">Syncing with CrossPoint…</string>
+    <string name="feeds_cd_auto_sync_on">Auto-sync enabled</string>
+    <string name="feeds_cd_auto_sync_off">Auto-sync paused</string>
 </resources>

@@ -22,8 +22,8 @@ android {
         applicationId = "com.crosssend.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 6
-        versionName = "1.1.0-beta.3"
+        versionCode = 7
+        versionName = "1.1.0-beta.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

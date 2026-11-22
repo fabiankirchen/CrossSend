@@ -523,4 +523,42 @@ class WebPageXtchRendererTest {
         assertFalse(jsDark.contains("document.documentElement.dataset.xtchInverted = '1';"))
         assertTrue(jsDark.contains("var effPageBgNoInv = (bodyCNoInv && bodyCNoInv[3] >= 0.5) ? bodyCNoInv : rootCNoInv;"))
     }
+
+    @Test
+    fun `isTrackerHost matches known tracker domains, subdomains, and mixed case`() {
+        val trackerHosts = listOf(
+            "doubleclick.net",
+            "stats.g.doubleclick.net",
+            "www.google-analytics.com",
+            "connect.facebook.net",
+            "cdn.taboola.com",
+            "DOUBLECLICK.NET",
+            "  Stats.G.DoubleClick.Net  ",
+            "pixel.facebook.com",
+            "js.sentry.io",
+            "metrics.omtrdc.net"
+        )
+
+        trackerHosts.forEach { host ->
+            assertTrue("Expected tracker host to be blocked: '$host'", WebPageXtchRenderer.isTrackerHost(host))
+        }
+    }
+
+    @Test
+    fun `isTrackerHost rejects legitimate publishers, lookalike domains, and blank inputs`() {
+        val nonTrackerHosts = listOf(
+            "theverge.com",
+            "nytimes.com",
+            "doubleclick-helper.example",
+            "notdoubleclick.net",
+            "doubleclick.net.example.com",
+            "doubleclick.net.",
+            "",
+            "   "
+        )
+
+        nonTrackerHosts.forEach { host ->
+            assertFalse("Expected non-tracker host to be allowed: '$host'", WebPageXtchRenderer.isTrackerHost(host))
+        }
+    }
 }

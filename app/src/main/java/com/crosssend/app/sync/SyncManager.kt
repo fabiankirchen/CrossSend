@@ -1,7 +1,6 @@
 package com.crosssend.app.sync
 
 import android.content.Context
-import android.util.Log
 import com.crosssend.app.R
 import com.crosssend.app.data.local.DocumentDao
 import com.crosssend.app.data.local.DocumentEntity
@@ -12,11 +11,11 @@ import com.crosssend.app.network.CrossPointWifiManager
 import com.crosssend.app.network.WebDavClient
 import com.crosssend.app.network.WifiConnectionState
 import com.crosssend.app.util.DocumentPreviewReader
+import com.crosssend.app.util.SafeLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
@@ -26,10 +25,16 @@ class SyncManager(
     private val documentDao: DocumentDao,
     private val webDavClient: WebDavClient,
     private val wifiManager: CrossPointWifiManager? = null,
+    private val deleteLocalAfterSync: () -> Boolean = { false },
+    private val targetDirsProvider: () -> List<String> = {
+        listOf("/crosssend", "/crosssend/articles", "/crosssend/books", "/crosssend/texts", "/sleep")
+    },
     private val onFetchRemoteArticle: (suspend (SyncManifestEntry) -> Boolean)? = null
 ) {
     private val tag = "SyncManager"
-    private val syncMutex = Mutex()
+    private val queueLock = Any()
+    private var isSyncRunning = false
+    private var pendingResync = false
 
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
@@ -43,158 +48,220 @@ class SyncManager(
     private val _uploadProgressByDocId = MutableStateFlow<Map<Long, Float>>(emptyMap())
     val uploadProgressByDocId: StateFlow<Map<Long, Float>> = _uploadProgressByDocId.asStateFlow()
 
+    private suspend fun ensureRemotePathHierarchy(rawPath: String) {
+        val clean = WebDavClient.sanitizeRemotePath(rawPath).trimEnd('/')
+        if (clean.isBlank() || clean == "/") return
+        val segments = clean.split('/').filter { it.isNotBlank() }
+        var current = ""
+        for (segment in segments) {
+            current = "$current/$segment"
+            webDavClient.ensureDirectoryExists(current)
+        }
+    }
+
     /**
-     * Executes a full 2-way sync with the CrossPoint Reader.
+     * Executes a full 2-way sync with the CrossPoint Reader, coalescing concurrent triggers.
      */
     suspend fun performSync(): SyncResult = withContext(Dispatchers.IO) {
-        if (!syncMutex.tryLock()) {
-            return@withContext SyncResult.Error(context.getString(R.string.sync_error_already_running))
+        val shouldStart = synchronized(queueLock) {
+            if (isSyncRunning) {
+                pendingResync = true
+                false
+            } else {
+                isSyncRunning = true
+                pendingResync = false
+                true
+            }
+        }
+        if (!shouldStart) {
+            return@withContext SyncResult.Queued
         }
 
         _isSyncing.value = true
         _syncStatusText.value = context.getString(R.string.sync_status_checking_connection)
 
+        var totalUploadedCount = 0
+        var totalDeletedCount = 0
+        var terminalError: SyncResult.Error? = null
+
         try {
-            if (!webDavClient.isReachable()) {
-                _syncStatusText.value = context.getString(R.string.sync_status_unreachable)
-                return@withContext SyncResult.Error(context.getString(R.string.sync_error_webdav_unreachable))
-            }
+            var keepGoing = true
+            while (keepGoing) {
+                if (!webDavClient.isReachable()) {
+                    _syncStatusText.value = context.getString(R.string.sync_status_unreachable)
+                    terminalError = SyncResult.Error(context.getString(R.string.sync_error_webdav_unreachable))
+                    break
+                }
 
-            // 1. Ensure dedicated folder structure exists: /crosssend/{articles, books, texts} and /sleep
-            _syncStatusText.value = context.getString(R.string.sync_status_creating_dirs)
-            webDavClient.ensureDirectoryExists("/crosssend")
-            webDavClient.ensureDirectoryExists("/crosssend/articles")
-            webDavClient.ensureDirectoryExists("/crosssend/books")
-            webDavClient.ensureDirectoryExists("/crosssend/texts")
-            webDavClient.ensureDirectoryExists("/sleep")
+                // 1. Ensure dedicated folder structure exists
+                _syncStatusText.value = context.getString(R.string.sync_status_creating_dirs)
+                for (dir in targetDirsProvider().distinct()) {
+                    ensureRemotePathHierarchy(dir)
+                }
 
-            // 2. Handle Pending Deletions (Deletions initiated in the App)
-            _syncStatusText.value = context.getString(R.string.sync_status_deleting_files)
-            val pendingDeletes = documentDao.getPendingDeletes()
-            var deletedCount = 0
-            for (doc in pendingDeletes) {
-                Log.d(tag, "Deleting remote file: ${doc.remotePath}")
-                val remoteDeleted = webDavClient.deleteFile(doc.remotePath)
-                val remoteDir = doc.remotePath.substringBeforeLast('/', "")
-                val readSubPath = if (remoteDir == "/" || remoteDir.isEmpty()) "/read/${doc.fileName}" else "${remoteDir.trimEnd('/')}/read/${doc.fileName}"
-                try {
-                    webDavClient.deleteFile(readSubPath)
-                } catch (_: Exception) {}
+                // 2. Handle Pending Deletions (Deletions initiated in the App)
+                _syncStatusText.value = context.getString(R.string.sync_status_deleting_files)
+                val pendingDeletes = documentDao.getPendingDeletes()
+                var deletedCount = 0
+                for (doc in pendingDeletes) {
+                    SafeLogger.d(tag, "Deleting remote file: ${SafeLogger.redactPath(doc.remotePath)}")
+                    val remoteDeleted = webDavClient.deleteFile(doc.remotePath)
+                    val remoteDir = doc.remotePath.substringBeforeLast('/', "")
+                    val readSubPath = if (remoteDir == "/" || remoteDir.isEmpty()) "/read/${doc.fileName}" else "${remoteDir.trimEnd('/')}/read/${doc.fileName}"
+                    try {
+                        webDavClient.deleteFile(readSubPath)
+                    } catch (_: Exception) {}
 
-                if (remoteDeleted) {
+                    if (remoteDeleted) {
+                        val localFile = File(doc.localPath)
+                        val excerpt = if (doc.type != DocumentType.SLEEP) {
+                            doc.excerpt ?: try {
+                                DocumentPreviewReader.readPreviewText(doc).take(300)
+                            } catch (_: Exception) {
+                                null
+                            }
+                        } else null
+
+                        // Remove local cached file
+                        if (localFile.exists()) {
+                            localFile.delete()
+                        }
+
+                        // Archive non-sleep documents in 90-day archive or delete sleep screens
+                        if (doc.type != DocumentType.SLEEP) {
+                            documentDao.markArchived(doc.id, System.currentTimeMillis(), excerpt)
+                        } else {
+                            documentDao.delete(doc)
+                        }
+                        deletedCount++
+                    }
+                }
+
+                // 3. Handle Pending Uploads (New articles, books, texts)
+                _syncStatusText.value = context.getString(R.string.sync_status_uploading_files)
+
+                // Ensure any ACSM files are routed to "/" (root) for Protected Content plugin
+                val allAcsm = documentDao.getAcsmDocumentsNeedingRootPath()
+                for (acsm in allAcsm) {
+                    documentDao.update(acsm.copy(remotePath = "/${acsm.fileName}", syncStatus = SyncStatus.PENDING_UPLOAD))
+                }
+
+                val pendingUploads = documentDao.getPendingUploads()
+                var uploadedCount = 0
+                for (doc in pendingUploads) {
                     val localFile = File(doc.localPath)
-                    val excerpt = if (doc.type != DocumentType.SLEEP) {
-                        doc.excerpt ?: try {
-                            DocumentPreviewReader.readPreviewText(doc).take(300)
-                        } catch (_: Exception) {
-                            null
-                        }
-                    } else null
-
-                    // Remove local cached file
-                    if (localFile.exists()) {
-                        localFile.delete()
-                    }
-
-                    // Archive non-sleep documents in 90-day archive or delete sleep screens
-                    if (doc.type != DocumentType.SLEEP) {
-                        documentDao.markArchived(doc.id, System.currentTimeMillis(), excerpt)
-                    } else {
+                    if (!localFile.exists()) {
+                        SafeLogger.w(tag, "Local file not found for upload: ${SafeLogger.redactPath(doc.localPath)}. Removing orphaned document record.")
                         documentDao.delete(doc)
+                        continue
                     }
-                    deletedCount++
-                }
-            }
 
-            // 3. Handle Pending Uploads (New articles, books, texts)
-            _syncStatusText.value = context.getString(R.string.sync_status_uploading_files)
-
-            // Ensure any ACSM files are routed to "/" (root) for Protected Content plugin
-            val allAcsm = documentDao.getAcsmDocumentsNeedingRootPath()
-            for (acsm in allAcsm) {
-                documentDao.update(acsm.copy(remotePath = "/${acsm.fileName}", syncStatus = SyncStatus.PENDING_UPLOAD))
-            }
-
-            val pendingUploads = documentDao.getPendingUploads()
-            var uploadedCount = 0
-            for (doc in pendingUploads) {
-                val localFile = File(doc.localPath)
-                if (!localFile.exists()) {
-                    Log.w(tag, "Local file not found for upload: ${doc.localPath}. Removing orphaned document record.")
-                    documentDao.delete(doc)
-                    continue
-                }
-
-                val targetPath = if (doc.fileName.endsWith(".acsm", true)) "/${doc.fileName}" else doc.remotePath
-                _syncStatusText.value = context.getString(R.string.sync_status_sending_file, doc.fileName)
-                _uploadProgressByDocId.value = _uploadProgressByDocId.value + (doc.id to 0f)
-                var lastReportedProgress = 0f
-                val progressLock = Any()
-                val success = webDavClient.uploadFile(localFile, targetPath) { progress ->
-                    val clamped = progress.coerceIn(0f, 1f)
-                    val shouldEmit = synchronized(progressLock) {
-                        when {
-                            // Reset progress tracking if upload fell back to another transport (e.g. WS -> HTTP/WebDAV)
-                            clamped < lastReportedProgress - 0.05f -> {
-                                lastReportedProgress = clamped
-                                true
+                    val targetPath = if (doc.fileName.endsWith(".acsm", true)) "/${doc.fileName}" else doc.remotePath
+                    val targetParent = targetPath.substringBeforeLast('/', "")
+                    if (targetParent.isNotBlank()) {
+                        ensureRemotePathHierarchy(targetParent)
+                    }
+                    _syncStatusText.value = context.getString(R.string.sync_status_sending_file, doc.fileName)
+                    _uploadProgressByDocId.value = _uploadProgressByDocId.value + (doc.id to 0f)
+                    var lastReportedProgress = 0f
+                    val progressLock = Any()
+                    val success = webDavClient.uploadFile(localFile, targetPath) { progress ->
+                        val clamped = progress.coerceIn(0f, 1f)
+                        val shouldEmit = synchronized(progressLock) {
+                            when {
+                                // Reset progress tracking if upload fell back to another transport (e.g. WS -> HTTP/WebDAV)
+                                clamped < lastReportedProgress - 0.05f -> {
+                                    lastReportedProgress = clamped
+                                    true
+                                }
+                                clamped - lastReportedProgress >= 0.02f || (clamped >= 0.99f && clamped > lastReportedProgress) -> {
+                                    lastReportedProgress = clamped
+                                    true
+                                }
+                                else -> false
                             }
-                            clamped - lastReportedProgress >= 0.02f || (clamped >= 0.99f && clamped > lastReportedProgress) -> {
-                                lastReportedProgress = clamped
-                                true
-                            }
-                            else -> false
+                        }
+                        if (shouldEmit) {
+                            _uploadProgressByDocId.value = _uploadProgressByDocId.value + (doc.id to clamped)
                         }
                     }
-                    if (shouldEmit) {
-                        _uploadProgressByDocId.value = _uploadProgressByDocId.value + (doc.id to clamped)
+                    _uploadProgressByDocId.value = _uploadProgressByDocId.value - doc.id
+                    if (success) {
+                        val obsoleteRemotePath = doc.pendingDeleteRemotePath
+                        if (!obsoleteRemotePath.isNullOrBlank() && obsoleteRemotePath != targetPath) {
+                            try {
+                                webDavClient.deleteFile(obsoleteRemotePath)
+                            } catch (_: Exception) {}
+                        }
+                        if (obsoleteRemotePath != null) {
+                            documentDao.clearPendingDeleteRemotePath(doc.id)
+                        }
+                        if (targetPath != doc.remotePath) {
+                            documentDao.update(doc.copy(remotePath = targetPath, pendingDeleteRemotePath = null))
+                        }
+                        if (deleteLocalAfterSync() && localFile.exists()) {
+                            val cachedExcerpt = doc.excerpt?.takeIf { it.isNotBlank() } ?: try {
+                                if (doc.type != DocumentType.SLEEP) {
+                                    DocumentPreviewReader.readPreviewText(doc).take(300).takeIf { it.isNotBlank() }
+                                } else null
+                            } catch (_: Exception) {
+                                null
+                            }
+                            if (cachedExcerpt != null && doc.excerpt.isNullOrBlank()) {
+                                documentDao.update(doc.copy(remotePath = targetPath, pendingDeleteRemotePath = null, excerpt = cachedExcerpt))
+                            }
+                            localFile.delete()
+                        }
+                        documentDao.markSynced(doc.id)
+                        uploadedCount++
+                    } else {
+                        documentDao.updateSyncStatus(doc.id, SyncStatus.FAILED, context.getString(R.string.sync_error_upload_failed))
                     }
                 }
-                _uploadProgressByDocId.value = _uploadProgressByDocId.value - doc.id
-                if (success) {
-                    val obsoleteRemotePath = doc.pendingDeleteRemotePath
-                    if (!obsoleteRemotePath.isNullOrBlank() && obsoleteRemotePath != targetPath) {
-                        try {
-                            webDavClient.deleteFile(obsoleteRemotePath)
-                        } catch (_: Exception) {}
+
+                // 4. Reconcile Read Folder (Detect read articles moved to /read on CrossPoint)
+                _syncStatusText.value = context.getString(R.string.sync_status_checking_read)
+                val readCleanedCount = reconcileReadArticles()
+                deletedCount += readCleanedCount
+
+                // 5. Reconcile Hidden Sync Manifest (/crosssend/.crosssend-sync.json)
+                _syncStatusText.value = context.getString(R.string.sync_status_syncing_manifest)
+                val (manifestUploaded, manifestDeleted) = reconcileSyncManifest()
+                uploadedCount += manifestUploaded
+                deletedCount += manifestDeleted
+
+                totalUploadedCount += uploadedCount
+                totalDeletedCount += deletedCount
+
+                keepGoing = synchronized(queueLock) {
+                    if (pendingResync) {
+                        pendingResync = false
+                        true
+                    } else {
+                        pendingResync = false
+                        isSyncRunning = false
+                        false
                     }
-                    if (obsoleteRemotePath != null) {
-                        documentDao.clearPendingDeleteRemotePath(doc.id)
-                    }
-                    if (targetPath != doc.remotePath) {
-                        documentDao.update(doc.copy(remotePath = targetPath, pendingDeleteRemotePath = null))
-                    }
-                    documentDao.markSynced(doc.id)
-                    uploadedCount++
-                } else {
-                    documentDao.updateSyncStatus(doc.id, SyncStatus.FAILED, context.getString(R.string.sync_error_upload_failed))
                 }
             }
 
-            // 4. Reconcile Read Folder (Detect read articles moved to /read on CrossPoint)
-            _syncStatusText.value = context.getString(R.string.sync_status_checking_read)
-            val readCleanedCount = reconcileReadArticles()
-            deletedCount += readCleanedCount
-
-            // 5. Reconcile Hidden Sync Manifest (/crosssend/.crosssend-sync.json)
-            _syncStatusText.value = context.getString(R.string.sync_status_syncing_manifest)
-            val (manifestUploaded, manifestDeleted) = reconcileSyncManifest()
-            uploadedCount += manifestUploaded
-            deletedCount += manifestDeleted
-
-            _lastSyncTimestamp.value = System.currentTimeMillis()
-            _syncStatusText.value = context.getString(R.string.sync_status_completed)
-            SyncResult.Success(uploadedCount, deletedCount)
-
+            terminalError ?: run {
+                _lastSyncTimestamp.value = System.currentTimeMillis()
+                _syncStatusText.value = context.getString(R.string.sync_status_completed)
+                SyncResult.Success(totalUploadedCount, totalDeletedCount)
+            }
         } catch (e: Exception) {
-            Log.e(tag, "Sync failed with exception", e)
-            val msg = e.message ?: context.getString(R.string.sync_error_unknown)
+            SafeLogger.e(tag, "Sync failed with exception", e)
+            val msg = SafeLogger.sanitizeMessage(e.message).ifBlank { context.getString(R.string.sync_error_unknown) }
             _syncStatusText.value = context.getString(R.string.proc_error_prefix, msg)
             SyncResult.Error(msg)
         } finally {
             _uploadProgressByDocId.value = emptyMap()
             _isSyncing.value = false
-            syncMutex.unlock()
+            synchronized(queueLock) {
+                isSyncRunning = false
+                pendingResync = false
+            }
         }
     }
     /**
@@ -228,7 +295,7 @@ class SyncManager(
                 val doc = docsMap[item.name.lowercase(Locale.ROOT)]
 
                 if (doc != null) {
-                    Log.i(tag, "Read article detected on CrossPoint in $folder. Cleaning up remotely and archiving locally.")
+                    SafeLogger.d(tag, "Read article detected on CrossPoint in $folder. Cleaning up remotely and archiving locally.")
 
                     val excerpt = if (!doc.excerpt.isNullOrBlank()) {
                         doc.excerpt
@@ -253,7 +320,7 @@ class SyncManager(
                         documentDao.markArchived(doc.id, System.currentTimeMillis(), excerpt)
                         cleanedCount++
                     } else {
-                        Log.w(tag, "Failed to delete remote read article in $folder; skipping local archive.")
+                        SafeLogger.w(tag, "Failed to delete remote read article in $folder; skipping local archive.")
                     }
                 }
             }
@@ -331,13 +398,13 @@ class SyncManager(
                                 onFetchRemoteArticle != null
                             ) {
                                 if (isHotspotOffline) {
-                                    Log.d(tag, "Skipping remote fetch for $remoteUrl during offline hotspot sync")
+                                    SafeLogger.d(tag, "Skipping remote fetch for ${SafeLogger.redactUrl(remoteUrl)} during offline hotspot sync")
                                     continue
                                 }
                                 val fetched = try {
                                     onFetchRemoteArticle.invoke(entry)
                                 } catch (e: Exception) {
-                                    Log.w(tag, "Failed to fetch remote manifest article $remoteUrl: ${e.message}")
+                                    SafeLogger.w(tag, "Failed to fetch remote manifest article ${SafeLogger.redactUrl(remoteUrl)}", e)
                                     false
                                 }
                                 if (fetched) {
@@ -388,7 +455,7 @@ class SyncManager(
                 )
             }
         } catch (e: Exception) {
-            Log.w(tag, "Manifest reconciliation failed: ${e.message}")
+            SafeLogger.w(tag, "Manifest reconciliation failed", e)
         }
         return manifestUploaded to manifestDeleted
     }

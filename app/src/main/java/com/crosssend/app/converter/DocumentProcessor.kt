@@ -8,10 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import androidx.core.net.toUri
 import com.crosssend.app.CrossSendApp
 import com.crosssend.app.MainActivity
 import com.crosssend.app.R
@@ -20,15 +18,21 @@ import com.crosssend.app.data.local.DomainHostUtils
 import com.crosssend.app.data.local.DomainPreferenceEntity
 import com.crosssend.app.data.model.DocumentType
 import com.crosssend.app.data.model.RenderMode
+import com.crosssend.app.data.model.SyncResult
 import com.crosssend.app.data.model.SyncStatus
+import com.crosssend.app.data.settings.AppSettings
 import com.crosssend.app.network.RssItem
+import com.crosssend.app.network.WebDavClient
 import com.crosssend.app.util.DateUtils
+import com.crosssend.app.util.SafeLogger
+import com.crosssend.app.util.UrlSanitizer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -124,15 +128,16 @@ class DocumentProcessor(private val context: Context) {
             return false
         }
 
-        fun normalizeExternalHttpsUrl(rawUrl: String): String {
+        fun normalizeExternalHttpsUrl(rawUrl: String, stripTracking: Boolean = true): String {
             val trimmed = rawUrl.trim()
             if (trimmed.isEmpty()) return trimmed
-            return when {
+            val normalized = when {
                 trimmed.startsWith("https://", ignoreCase = true) -> trimmed
                 trimmed.startsWith("http://", ignoreCase = true) -> "https://" + trimmed.substring(7)
                 !trimmed.contains("://") -> "https://$trimmed"
                 else -> trimmed
             }
+            return if (stripTracking) UrlSanitizer.stripTrackingParams(normalized) else normalized
         }
     }
 
@@ -144,11 +149,88 @@ class DocumentProcessor(private val context: Context) {
 
     fun nextNotificationId(): Int = notificationCounter.incrementAndGet()
 
+    fun cleanupOrphanedCacheFiles(maxAgeMs: Long = 30L * 60L * 1000L) {
+        val cutoff = System.currentTimeMillis() - maxAgeMs
+        val stalePrefixes = listOf("xtch_build_", "xtch_stream_", "pdf_cover_", "sd_upload_", "sd_transfer_", "font_")
+        try {
+            context.cacheDir.listFiles()?.forEach { f ->
+                if (f.isFile && stalePrefixes.any { f.name.startsWith(it) } && f.lastModified() < cutoff) {
+                    f.delete()
+                }
+            }
+            val incomingSharesDir = File(context.cacheDir, "incoming_shares")
+            if (incomingSharesDir.exists() && incomingSharesDir.isDirectory) {
+                incomingSharesDir.listFiles()?.forEach { child ->
+                    if (child.lastModified() < cutoff) {
+                        child.deleteRecursively()
+                    }
+                }
+            }
+            val epubImagesDir = File(context.cacheDir, "epub_images")
+            if (epubImagesDir.exists() && epubImagesDir.isDirectory) {
+                epubImagesDir.listFiles()?.forEach { img ->
+                    if (img.isFile && img.lastModified() < cutoff) {
+                        img.delete()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            SafeLogger.w(tag, "Failed to sweep orphaned cache files", e)
+        }
+    }
+
+    private fun moveTempFileAtomically(tempFile: File, targetFile: File) {
+        targetFile.parentFile?.mkdirs()
+        if (!tempFile.renameTo(targetFile)) {
+            tempFile.copyTo(targetFile, overwrite = true)
+            tempFile.delete()
+        }
+    }
+
+    private fun currentSettings(): AppSettings {
+        return try {
+            CrossSendApp.instance.settingsRepository.settings.value
+        } catch (_: Exception) {
+            AppSettings()
+        }
+    }
+
+    private fun shouldStripTracking(): Boolean = currentSettings().stripTrackingParams
+
+    private fun resolveRemoteTargetFolder(docType: DocumentType, remoteFolderOverride: String?): String {
+        val override = remoteFolderOverride?.trim()?.takeIf { it.isNotBlank() }
+        if (override != null) {
+            return WebDavClient.sanitizeRemotePath(override).trimEnd('/').ifBlank { "/" }
+        }
+        return currentSettings().defaultFolderFor(docType)
+    }
+
+    private fun buildRemoteFilePath(docType: DocumentType, fileName: String, remoteFolderOverride: String?): String {
+        val folder = resolveRemoteTargetFolder(docType, remoteFolderOverride)
+        return if (folder == "/") "/$fileName" else "$folder/$fileName"
+    }
+
+    private fun handleSyncOutcome(
+        notificationId: Int,
+        title: String,
+        successSubtitle: String,
+        result: SyncResult
+    ) {
+        when (result) {
+            is SyncResult.Success -> showSuccessNotification(notificationId, title, successSubtitle)
+            is SyncResult.Queued -> showSuccessNotification(notificationId, title, context.getString(R.string.proc_success_saved_for_sync))
+            is SyncResult.Error -> showErrorNotification(notificationId, result.message)
+        }
+    }
+
     suspend fun handleShare(
         subject: String?,
         sharedText: String?,
         streamUri: Uri?,
-        mimeType: String
+        mimeType: String,
+        renderModeOverride: RenderMode? = null,
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
     ) = withContext(Dispatchers.IO) {
         val notificationId = nextNotificationId()
         try {
@@ -176,9 +258,14 @@ class DocumentProcessor(private val context: Context) {
             )
 
             if (urlMatch != null && !isExplicitDocFile) {
-                // Shared text contains a web URL and this is not a standalone PDF/EPUB/ACSM file share.
-                // Prioritize processing the web article URL!
-                processWebUrl(normalizeExternalHttpsUrl(urlMatch.value), fallbackTitle = subject, notificationId = notificationId)
+                processWebUrl(
+                    normalizeExternalHttpsUrl(urlMatch.value, stripTracking = shouldStripTracking()),
+                    fallbackTitle = subject,
+                    notificationId = notificationId,
+                    triggerSync = triggerSync,
+                    renderModeOverride = renderModeOverride,
+                    remoteFolderOverride = remoteFolderOverride
+                )
             } else if (streamUri != null) {
                 val isImage = streamFileName.endsWith(".png") || streamFileName.endsWith(".jpg") ||
                               streamFileName.endsWith(".jpeg") || streamFileName.endsWith(".webp") ||
@@ -186,17 +273,31 @@ class DocumentProcessor(private val context: Context) {
                               streamUri.toString().contains("screenshot", ignoreCase = true)
 
                 if (isImage && urlMatch != null) {
-                    processWebUrl(normalizeExternalHttpsUrl(urlMatch.value), fallbackTitle = subject, notificationId = notificationId)
+                    processWebUrl(
+                        normalizeExternalHttpsUrl(urlMatch.value, stripTracking = shouldStripTracking()),
+                        fallbackTitle = subject,
+                        notificationId = notificationId,
+                        triggerSync = triggerSync,
+                        renderModeOverride = renderModeOverride,
+                        remoteFolderOverride = remoteFolderOverride
+                    )
                 } else {
-                    processFileUri(streamUri, mimeType, notificationId)
+                    processFileUri(streamUri, mimeType, notificationId, remoteFolderOverride = remoteFolderOverride, triggerSync = triggerSync)
                 }
             } else if (!trimmedText.isNullOrBlank()) {
                 if (urlMatch != null && (trimmedText == urlMatch.value || trimmedText.length < urlMatch.value.length + 300 || trimmedText.lines().size <= 3)) {
-                    processWebUrl(normalizeExternalHttpsUrl(urlMatch.value), fallbackTitle = subject, notificationId = notificationId)
+                    processWebUrl(
+                        normalizeExternalHttpsUrl(urlMatch.value, stripTracking = shouldStripTracking()),
+                        fallbackTitle = subject,
+                        notificationId = notificationId,
+                        triggerSync = triggerSync,
+                        renderModeOverride = renderModeOverride,
+                        remoteFolderOverride = remoteFolderOverride
+                    )
                 } else if (isHtmlContent(trimmedText) || mimeType.contains("html", ignoreCase = true)) {
-                    processHtmlContent(trimmedText, baseUrl = null, subject = subject, notificationId = notificationId)
+                    processHtmlContent(trimmedText, baseUrl = null, subject = subject, notificationId = notificationId, remoteFolderOverride = remoteFolderOverride, triggerSync = triggerSync)
                 } else {
-                    processEmailOrText(subject, sharedText, notificationId)
+                    processEmailOrText(subject, sharedText, notificationId, remoteFolderOverride = remoteFolderOverride, triggerSync = triggerSync)
                 }
             } else {
                 showErrorNotification(notificationId, context.getString(R.string.proc_error_no_shareable_content))
@@ -206,8 +307,8 @@ class DocumentProcessor(private val context: Context) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "handleShare failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "handleShare failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, SafeLogger.sanitizeMessage(e.localizedMessage)))
         }
     }
 
@@ -215,19 +316,48 @@ class DocumentProcessor(private val context: Context) {
         stagedFiles: List<StagedShareFile>,
         subject: String?,
         sharedText: String?,
-        mimeType: String
+        mimeType: String,
+        renderModeOverride: RenderMode? = null,
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
     ) = withContext(Dispatchers.IO) {
         try {
             if (stagedFiles.isEmpty()) {
-                handleShare(subject = subject, sharedText = sharedText, streamUri = null, mimeType = mimeType)
+                handleShare(
+                    subject = subject,
+                    sharedText = sharedText,
+                    streamUri = null,
+                    mimeType = mimeType,
+                    renderModeOverride = renderModeOverride,
+                    remoteFolderOverride = remoteFolderOverride,
+                    triggerSync = triggerSync
+                )
                 return@withContext
             }
 
             if (stagedFiles.size == 1) {
-                handleSingleStagedShare(stagedFiles.first(), subject, sharedText, mimeType, nextNotificationId())
+                handleSingleStagedShare(
+                    staged = stagedFiles.first(),
+                    subject = subject,
+                    sharedText = sharedText,
+                    fallbackMimeType = mimeType,
+                    notificationId = nextNotificationId(),
+                    renderModeOverride = renderModeOverride,
+                    remoteFolderOverride = remoteFolderOverride,
+                    triggerSync = triggerSync
+                )
             } else {
                 for (staged in stagedFiles) {
-                    handleSingleStagedShare(staged, subject, sharedText, mimeType, nextNotificationId())
+                    handleSingleStagedShare(
+                        staged = staged,
+                        subject = subject,
+                        sharedText = sharedText,
+                        fallbackMimeType = mimeType,
+                        notificationId = nextNotificationId(),
+                        renderModeOverride = renderModeOverride,
+                        remoteFolderOverride = remoteFolderOverride,
+                        triggerSync = triggerSync
+                    )
                 }
             }
         } finally {
@@ -240,7 +370,10 @@ class DocumentProcessor(private val context: Context) {
         subject: String?,
         sharedText: String?,
         fallbackMimeType: String,
-        notificationId: Int
+        notificationId: Int,
+        renderModeOverride: RenderMode? = null,
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
     ) {
         try {
             val trimmedText = sharedText?.trim()
@@ -257,7 +390,14 @@ class DocumentProcessor(private val context: Context) {
                 effectiveMime.contains("adobe.adept", ignoreCase = true)
 
             if (urlMatch != null && !isExplicitDocFile) {
-                processWebUrl(normalizeExternalHttpsUrl(urlMatch.value), fallbackTitle = subject, notificationId = notificationId)
+                processWebUrl(
+                    normalizeExternalHttpsUrl(urlMatch.value, stripTracking = shouldStripTracking()),
+                    fallbackTitle = subject,
+                    notificationId = notificationId,
+                    triggerSync = triggerSync,
+                    renderModeOverride = renderModeOverride,
+                    remoteFolderOverride = remoteFolderOverride
+                )
             } else {
                 val isImage = lowerName.endsWith(".png") || lowerName.endsWith(".jpg") ||
                     lowerName.endsWith(".jpeg") || lowerName.endsWith(".webp") ||
@@ -265,9 +405,16 @@ class DocumentProcessor(private val context: Context) {
                     lowerName.contains("screenshot")
 
                 if (isImage && urlMatch != null) {
-                    processWebUrl(normalizeExternalHttpsUrl(urlMatch.value), fallbackTitle = subject, notificationId = notificationId)
+                    processWebUrl(
+                        normalizeExternalHttpsUrl(urlMatch.value, stripTracking = shouldStripTracking()),
+                        fallbackTitle = subject,
+                        notificationId = notificationId,
+                        triggerSync = triggerSync,
+                        renderModeOverride = renderModeOverride,
+                        remoteFolderOverride = remoteFolderOverride
+                    )
                 } else {
-                    processStagedFile(staged, effectiveMime, notificationId)
+                    processStagedFile(staged, effectiveMime, notificationId, remoteFolderOverride = remoteFolderOverride, triggerSync = triggerSync)
                 }
             }
         } catch (e: Exception) {
@@ -275,8 +422,8 @@ class DocumentProcessor(private val context: Context) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "handleStagedShare failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "handleStagedShare failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, SafeLogger.sanitizeMessage(e.localizedMessage)))
         }
     }
 
@@ -308,8 +455,9 @@ class DocumentProcessor(private val context: Context) {
     }
 
     suspend fun resolveRenderModeForUrl(url: String?): RenderMode {
-        val host = DomainHostUtils.normalizeHost(url) ?: return RenderMode.READER
-        return CrossSendApp.instance.database.domainPreferenceDao().getRenderModeForHost(host) ?: RenderMode.READER
+        val fallback = currentSettings().defaultRenderMode
+        val host = DomainHostUtils.normalizeHost(url) ?: return fallback
+        return CrossSendApp.instance.database.domainPreferenceDao().getRenderModeForHost(host) ?: fallback
     }
 
     private suspend fun upsertArticleDocument(
@@ -321,10 +469,11 @@ class DocumentProcessor(private val context: Context) {
         excerpt: String?,
         renderMode: RenderMode,
         publishedTimestamp: Long = System.currentTimeMillis(),
-        existingById: DocumentEntity? = null
+        existingById: DocumentEntity? = null,
+        remoteFolderOverride: String? = null
     ) {
         val app = CrossSendApp.instance
-        val remotePath = "/crosssend/articles/$fileName"
+        val remotePath = buildRemoteFilePath(DocumentType.ARTICLE, fileName, remoteFolderOverride)
         val existing = existingById ?: sourceUrl?.let { app.database.documentDao().findBySourceUrl(it) }
         if (existing != null) {
             if (existing.localPath != targetFile.absolutePath) {
@@ -332,7 +481,7 @@ class DocumentProcessor(private val context: Context) {
                     File(existing.localPath).delete()
                     com.crosssend.app.util.EpubCoverLoader.deleteSidecarCoverForDocument(context, existing.fileName)
                 } catch (e: Exception) {
-                    Log.w(tag, "Could not delete previous local file", e)
+                    SafeLogger.w(tag, "Could not delete previous local file", e)
                 }
             }
             val obsoleteRemote = if (existing.syncStatus == SyncStatus.SYNCED && existing.remotePath != remotePath) {
@@ -388,14 +537,17 @@ class DocumentProcessor(private val context: Context) {
         publishedDate: Date? = null,
         existingDoc: DocumentEntity? = null,
         notificationId: Int = nextNotificationId(),
-        triggerSync: Boolean = true
+        triggerSync: Boolean = true,
+        remoteFolderOverride: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
         val progressTitle = fallbackTitle ?: existingDoc?.title ?: "CrossSend"
         showProgressNotification(notificationId, progressTitle, context.getString(R.string.proc_progress_rendering_layout), indeterminate = true)
 
         try {
-            require(EInkImageOptimizer.isSafeHttpsExternalUrl(url)) { "Invalid or internal URL blocked: $url" }
+            require(EInkImageOptimizer.isSafeHttpsExternalUrl(url)) {
+                "Invalid or internal URL blocked: ${SafeLogger.redactUrl(url)}"
+            }
             val slugTitle = app.articleExtractor.extractTitleFromUrlSlug(url)
             val initialTitle = fallbackTitle?.takeIf { it.isNotBlank() }
                 ?: existingDoc?.title?.takeIf { it.isNotBlank() }
@@ -404,97 +556,109 @@ class DocumentProcessor(private val context: Context) {
 
             val articlesDir = File(app.libraryDir, "articles").apply { mkdirs() }
             val tempXtchFile = File.createTempFile("xtch_build_", ".xtch", context.cacheDir)
+            var stagedFinalTmp: File? = null
+            var renderRes: XtchRenderResult? = null
+            var optCover: OptimizedImage? = null
 
-            val renderRes = try {
-                WebPageXtchRenderer.renderUrlToXtch(
+            try {
+                renderRes = WebPageXtchRenderer.renderUrlToXtch(
                     context = context,
                     url = url,
                     outputFile = tempXtchFile,
                     title = initialTitle,
                     author = author ?: existingDoc?.author ?: DomainHostUtils.normalizeHost(url)
                 )
-            } catch (t: Throwable) {
-                tempXtchFile.delete()
-                throw t
-            }
-            if (renderRes == null || !tempXtchFile.exists()) {
-                tempXtchFile.delete()
-                showErrorNotification(notificationId, context.getString(R.string.proc_error_xtch_failed))
-                return@withContext false
-            }
+                val validRes = renderRes
+                if (validRes == null || !tempXtchFile.exists()) {
+                    showErrorNotification(notificationId, context.getString(R.string.proc_error_xtch_failed))
+                    return@withContext false
+                }
 
-            val effectiveDate = publishedDate
-                ?: renderRes.publishedDate
-                ?: extractTimestampFromUrl(url)
-                ?: Date()
-            val timestamp = DateUtils.formatForFilename(effectiveDate)
+                val effectiveDate = publishedDate
+                    ?: validRes.publishedDate
+                    ?: extractTimestampFromUrl(url)
+                    ?: Date()
+                val timestamp = DateUtils.formatForFilename(effectiveDate)
 
-            val effectiveTitle = app.articleExtractor.sanitizeDocumentTitle(
-                fallbackTitle?.takeIf { it.isNotBlank() }
-                    ?: existingDoc?.title?.takeIf { it.isNotBlank() }
-                    ?: renderRes.title?.takeIf { it.isNotBlank() }
-                    ?: initialTitle
-            )
-            val finalFileName = "${timestamp}_${sanitizeFilename(effectiveTitle)}.xtch"
-            val finalFile = ensureInsideDirectory(File(articlesDir, finalFileName), articlesDir)
-            try {
-                tempXtchFile.copyTo(finalFile, overwrite = true)
+                val effectiveTitle = app.articleExtractor.sanitizeDocumentTitle(
+                    fallbackTitle?.takeIf { it.isNotBlank() }
+                        ?: existingDoc?.title?.takeIf { it.isNotBlank() }
+                        ?: validRes.title?.takeIf { it.isNotBlank() }
+                        ?: initialTitle
+                )
+                val finalFileName = "${timestamp}_${sanitizeFilename(effectiveTitle)}.xtch"
+                val finalFile = ensureInsideDirectory(File(articlesDir, finalFileName), articlesDir)
+                val tmpDest = ensureInsideDirectory(File(articlesDir, "${finalFileName}.tmp"), articlesDir)
+                stagedFinalTmp = tmpDest
+                tempXtchFile.copyTo(tmpDest, overwrite = true)
+
+                val preservedCover = com.crosssend.app.util.EpubCoverLoader.preserveOrExtractCoverForNewFileName(
+                    context = context,
+                    previousDoc = existingDoc,
+                    newDocFileName = finalFileName
+                )
+                if (!preservedCover) {
+                    val leadUrl = validRes.leadImageUrl
+                    val imgSettings = currentSettings()
+                    optCover = if (!leadUrl.isNullOrBlank()) {
+                        try {
+                            imageOptimizer.optimizeImage(
+                                leadUrl,
+                                index = 0,
+                                isCover = true,
+                                maxDimOverride = imgSettings.imageMaxDim,
+                                jpegQualityOverride = imgSettings.imageJpegQuality
+                            )
+                        } catch (_: Exception) {
+                            null
+                        }
+                    } else null
+                    val downloadedCover = optCover?.colorCoverFile ?: optCover?.localFile
+                    if (downloadedCover != null && downloadedCover.exists()) {
+                        com.crosssend.app.util.EpubCoverLoader.saveColorCoverForDocument(context, finalFileName, downloadedCover)
+                    }
+                }
+
+                app.reconcileMutex.withLock {
+                    moveTempFileAtomically(tmpDest, finalFile)
+                    upsertArticleDocument(
+                        title = effectiveTitle,
+                        author = author ?: existingDoc?.author ?: DomainHostUtils.normalizeHost(url),
+                        sourceUrl = url,
+                        targetFile = finalFile,
+                        fileName = finalFileName,
+                        excerpt = validRes.excerpt,
+                        renderMode = RenderMode.ORIGINAL_LAYOUT,
+                        publishedTimestamp = effectiveDate.time,
+                        existingById = existingDoc,
+                        remoteFolderOverride = remoteFolderOverride
+                    )
+                }
+
+                if (triggerSync && (app.wifiManager.isConnected() || app.webDavClient.isReachable())) {
+                    showProgressNotification(notificationId, effectiveTitle, context.getString(R.string.proc_progress_transferring), indeterminate = true)
+                    val syncRes = app.syncManager.performSync()
+                    handleSyncOutcome(notificationId, effectiveTitle, context.getString(R.string.proc_success_transferred), syncRes)
+                } else if (triggerSync) {
+                    showSuccessNotification(notificationId, effectiveTitle, context.getString(R.string.proc_success_saved_for_sync))
+                } else {
+                    dismissNotification(notificationId)
+                }
+                true
             } finally {
                 tempXtchFile.delete()
-            }
-
-            val preservedCover = com.crosssend.app.util.EpubCoverLoader.preserveOrExtractCoverForNewFileName(
-                context = context,
-                previousDoc = existingDoc,
-                newDocFileName = finalFileName
-            )
-            if (!preservedCover) {
-                val leadUrl = renderRes.leadImageUrl
-                val optCover = if (!leadUrl.isNullOrBlank()) {
-                    try {
-                        imageOptimizer.optimizeImage(leadUrl, index = 0, isCover = true)
-                    } catch (_: Exception) {
-                        null
-                    }
-                } else null
-                val downloadedCover = optCover?.colorCoverFile ?: optCover?.localFile
-                if (downloadedCover != null && downloadedCover.exists()) {
-                    com.crosssend.app.util.EpubCoverLoader.saveColorCoverForDocument(context, finalFileName, downloadedCover)
-                }
+                if (stagedFinalTmp?.exists() == true) stagedFinalTmp.delete()
                 optCover?.localFile?.delete()
                 optCover?.colorCoverFile?.delete()
+                renderRes?.colorCoverFile?.delete()
             }
-            renderRes.colorCoverFile?.delete()
-
-            upsertArticleDocument(
-                title = effectiveTitle,
-                author = author ?: existingDoc?.author ?: DomainHostUtils.normalizeHost(url),
-                sourceUrl = url,
-                targetFile = finalFile,
-                fileName = finalFileName,
-                excerpt = renderRes.excerpt,
-                renderMode = RenderMode.ORIGINAL_LAYOUT,
-                publishedTimestamp = effectiveDate.time,
-                existingById = existingDoc
-            )
-
-            if (triggerSync && (app.wifiManager.isConnected() || app.webDavClient.isReachable())) {
-                showProgressNotification(notificationId, effectiveTitle, context.getString(R.string.proc_progress_transferring), indeterminate = true)
-                app.syncManager.performSync()
-                showSuccessNotification(notificationId, effectiveTitle, context.getString(R.string.proc_success_transferred))
-            } else if (triggerSync) {
-                showSuccessNotification(notificationId, effectiveTitle, context.getString(R.string.proc_success_saved_for_sync))
-            } else {
-                dismissNotification(notificationId)
-            }
-            true
         } catch (e: Exception) {
             if (e is CancellationException) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "processWebUrlOriginalLayout failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "processWebUrlOriginalLayout failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, SafeLogger.sanitizeMessage(e.localizedMessage)))
             false
         }
     }
@@ -502,7 +666,7 @@ class DocumentProcessor(private val context: Context) {
     suspend fun switchDocumentRenderMode(documentId: Long, newMode: RenderMode): Boolean = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
         val doc = app.database.documentDao().getById(documentId) ?: return@withContext false
-        val url = doc.sourceUrl?.let { normalizeExternalHttpsUrl(it) }
+        val url = doc.sourceUrl?.let { normalizeExternalHttpsUrl(it, stripTracking = shouldStripTracking()) }
             ?.takeIf { EInkImageOptimizer.isSafeHttpsExternalUrl(it) }
             ?: return@withContext false
 
@@ -530,7 +694,7 @@ class DocumentProcessor(private val context: Context) {
         } else {
             showProgressNotification(notifId, doc.title, context.getString(R.string.proc_progress_reading_article), indeterminate = true)
             try {
-                val (article, rawHtml) = app.articleExtractor.extractFromUrlWithRaw(url)
+                val (article, rawHtml) = app.articleExtractor.extractFromUrlWithRaw(url, stripTracking = shouldStripTracking())
                 val finalTitle = doc.title.ifBlank { article.title }
                 processExtractedArticle(
                     article = article.copy(title = finalTitle),
@@ -539,7 +703,7 @@ class DocumentProcessor(private val context: Context) {
                     sourceType = "MODE_SWITCH"
                 )
                 true
-            } catch (paywallEx: PaywallOrLoginRequiredException) {
+            } catch (_: PaywallOrLoginRequiredException) {
                 dismissNotification(notifId)
                 app.webArticleLoginRequest.value = com.crosssend.app.WebArticleLoginRequest(url, doc.title)
                 false
@@ -548,8 +712,8 @@ class DocumentProcessor(private val context: Context) {
                     dismissNotification(notifId)
                     throw e
                 }
-                Log.e(tag, "switchDocumentRenderMode to READER failed", e)
-                showErrorNotification(notifId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
+                SafeLogger.e(tag, "switchDocumentRenderMode to READER failed", e)
+                showErrorNotification(notifId, context.getString(R.string.proc_error_prefix, SafeLogger.sanitizeMessage(e.localizedMessage)))
                 false
             }
         }
@@ -563,7 +727,7 @@ class DocumentProcessor(private val context: Context) {
         var updatedCount = 0
         for (doc in docs) {
             val rawUrl = doc.sourceUrl ?: continue
-            val url = normalizeExternalHttpsUrl(rawUrl)
+            val url = normalizeExternalHttpsUrl(rawUrl, stripTracking = shouldStripTracking())
             if (!EInkImageOptimizer.isSafeHttpsExternalUrl(url)) continue
             val ok = processWebUrlOriginalLayout(
                 url = url,
@@ -586,24 +750,30 @@ class DocumentProcessor(private val context: Context) {
         url: String,
         fallbackTitle: String? = null,
         notificationId: Int = nextNotificationId(),
-        triggerSync: Boolean = true
+        triggerSync: Boolean = true,
+        renderModeOverride: RenderMode? = null,
+        remoteFolderOverride: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
         try {
-            require(EInkImageOptimizer.isSafeHttpsExternalUrl(url)) { "Invalid or internal URL blocked: $url" }
-            if (resolveRenderModeForUrl(url) == RenderMode.ORIGINAL_LAYOUT) {
+            require(EInkImageOptimizer.isSafeHttpsExternalUrl(url)) {
+                "Invalid or internal URL blocked: ${SafeLogger.redactUrl(url)}"
+            }
+            val effectiveMode = renderModeOverride ?: resolveRenderModeForUrl(url)
+            if (effectiveMode == RenderMode.ORIGINAL_LAYOUT) {
                 return@withContext processWebUrlOriginalLayout(
                     url = url,
                     fallbackTitle = fallbackTitle,
                     author = null,
                     publishedDate = null,
                     notificationId = notificationId,
-                    triggerSync = triggerSync
+                    triggerSync = triggerSync,
+                    remoteFolderOverride = remoteFolderOverride
                 )
             }
             showProgressNotification(notificationId, "CrossSend", context.getString(R.string.proc_progress_reading_article), indeterminate = true)
 
-            val (article, rawHtml) = app.articleExtractor.extractFromUrlWithRaw(url)
+            val (article, rawHtml) = app.articleExtractor.extractFromUrlWithRaw(url, stripTracking = shouldStripTracking())
             val cleanedArticleTitle = app.articleExtractor.cleanTitle(article.title)
             val cleanedFallbackTitle = fallbackTitle?.let { app.articleExtractor.cleanTitle(it) }
 
@@ -620,10 +790,11 @@ class DocumentProcessor(private val context: Context) {
                 rawInput = rawHtml,
                 sourceType = "WEB_URL",
                 inputSubject = fallbackTitle,
-                triggerSync = triggerSync
+                triggerSync = triggerSync,
+                remoteFolderOverride = remoteFolderOverride
             )
         } catch (paywallEx: PaywallOrLoginRequiredException) {
-            Log.i(tag, "Paywall / Login detected for ${redactUrlForLog(url)}: ${paywallEx.message}")
+            SafeLogger.d(tag, "Paywall / Login detected for ${SafeLogger.redactUrl(url)}")
             showPaywallLoginNotification(notificationId, url, paywallEx.articleTitle ?: fallbackTitle)
             app.webArticleLoginRequest.value = com.crosssend.app.WebArticleLoginRequest(url, paywallEx.articleTitle ?: fallbackTitle)
             false
@@ -632,8 +803,8 @@ class DocumentProcessor(private val context: Context) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "processWebUrl failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "processWebUrl failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, SafeLogger.sanitizeMessage(e.localizedMessage)))
             false
         }
     }
@@ -642,7 +813,9 @@ class DocumentProcessor(private val context: Context) {
         html: String,
         baseUrl: String? = null,
         subject: String? = null,
-        notificationId: Int = nextNotificationId()
+        notificationId: Int = nextNotificationId(),
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
     ) = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
         showProgressNotification(notificationId, "CrossSend", context.getString(R.string.proc_progress_reading_article), indeterminate = true)
@@ -704,15 +877,17 @@ class DocumentProcessor(private val context: Context) {
                 notificationId = notificationId,
                 rawInput = html,
                 sourceType = "HTML_SHARE",
-                inputSubject = subject
+                inputSubject = subject,
+                triggerSync = triggerSync,
+                remoteFolderOverride = remoteFolderOverride
             )
         } catch (e: Exception) {
             if (e is CancellationException) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "processHtmlContent failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "processHtmlContent failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, SafeLogger.sanitizeMessage(e.localizedMessage)))
         }
     }
 
@@ -722,7 +897,9 @@ class DocumentProcessor(private val context: Context) {
         rawInput: String? = null,
         sourceType: String = "WEB_ARTICLE",
         inputSubject: String? = null,
-        triggerSync: Boolean = true
+        triggerSync: Boolean = true,
+        remoteFolderOverride: String? = null,
+        styling: EpubStylingOptions? = null
     ): Boolean = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
         try {
@@ -737,7 +914,6 @@ class DocumentProcessor(private val context: Context) {
                 inlineUrls = article.imageUrls.take(12)
             )
 
-            showProgressNotification(notificationId, article.title, context.getString(R.string.proc_progress_creating_epub), indeterminate = true)
             val effectiveDate = article.publishedDate
                 ?: extractTimestampFromUrl(article.sourceUrl)
                 ?: Date()
@@ -747,42 +923,53 @@ class DocumentProcessor(private val context: Context) {
 
             val articlesDir = File(app.libraryDir, "articles").apply { mkdirs() }
             val targetEpubFile = ensureInsideDirectory(File(articlesDir, fileName), articlesDir)
+            val tmpEpubFile = ensureInsideDirectory(File(articlesDir, "${fileName}.tmp"), articlesDir)
 
-            val built = app.epubBuilder.buildEpub(
-                title = article.title,
-                subtitle = article.subtitle,
-                author = article.author ?: article.siteName,
-                sourceUrl = article.sourceUrl,
-                contentHtml = finalContentHtml,
-                coverImage = coverImage,
-                inlineImages = inlineImages,
-                outputFile = targetEpubFile,
-                wordCount = article.wordCount,
-                readingTimeMinutes = article.readingTimeMinutes,
-                publishedDate = effectiveDate
-            )
-
-            if (built) {
-                com.crosssend.app.util.EpubCoverLoader.saveColorCoverForDocument(context, fileName, coverImage?.colorCoverFile)
-            }
-            coverImage?.localFile?.delete()
-            coverImage?.colorCoverFile?.delete()
-            inlineImages.forEach { it.localFile.delete() }
-
-            val excerpt = article.subtitle?.takeIf { it.isNotBlank() }?.take(300)
-                ?: org.jsoup.Jsoup.parse(finalContentHtml).text().take(300).takeIf { it.isNotBlank() }
-
-            if (built) {
-                upsertArticleDocument(
+            val built = try {
+                showProgressNotification(notificationId, article.title, context.getString(R.string.proc_progress_creating_epub), indeterminate = true)
+                val success = app.epubBuilder.buildEpub(
                     title = article.title,
+                    subtitle = article.subtitle,
                     author = article.author ?: article.siteName,
                     sourceUrl = article.sourceUrl,
-                    targetFile = targetEpubFile,
-                    fileName = fileName,
-                    excerpt = excerpt,
-                    renderMode = RenderMode.READER,
-                    publishedTimestamp = effectiveDate.time
+                    contentHtml = finalContentHtml,
+                    coverImage = coverImage,
+                    inlineImages = inlineImages,
+                    outputFile = tmpEpubFile,
+                    wordCount = article.wordCount,
+                    readingTimeMinutes = article.readingTimeMinutes,
+                    publishedDate = effectiveDate,
+                    language = article.language,
+                    styling = styling ?: currentSettings().toEpubStylingOptions()
                 )
+                if (success) {
+                    com.crosssend.app.util.EpubCoverLoader.saveColorCoverForDocument(context, fileName, coverImage?.colorCoverFile)
+                }
+                success
+            } finally {
+                coverImage?.localFile?.delete()
+                coverImage?.colorCoverFile?.delete()
+                inlineImages.forEach { it.localFile.delete() }
+            }
+
+            if (built) {
+                val excerpt = article.subtitle?.takeIf { it.isNotBlank() }?.take(300)
+                    ?: org.jsoup.Jsoup.parse(finalContentHtml).text().take(300).takeIf { it.isNotBlank() }
+
+                app.reconcileMutex.withLock {
+                    moveTempFileAtomically(tmpEpubFile, targetEpubFile)
+                    upsertArticleDocument(
+                        title = article.title,
+                        author = article.author ?: article.siteName,
+                        sourceUrl = article.sourceUrl,
+                        targetFile = targetEpubFile,
+                        fileName = fileName,
+                        excerpt = excerpt,
+                        renderMode = RenderMode.READER,
+                        publishedTimestamp = effectiveDate.time,
+                        remoteFolderOverride = remoteFolderOverride
+                    )
+                }
 
                 // Record debug dump if raw input is available
                 if (!rawInput.isNullOrBlank()) {
@@ -799,8 +986,8 @@ class DocumentProcessor(private val context: Context) {
 
                 if (triggerSync && (app.wifiManager.isConnected() || app.webDavClient.isReachable())) {
                     showProgressNotification(notificationId, article.title, context.getString(R.string.proc_progress_transferring), indeterminate = true)
-                    app.syncManager.performSync()
-                    showSuccessNotification(notificationId, article.title, context.getString(R.string.proc_success_transferred))
+                    val syncRes = app.syncManager.performSync()
+                    handleSyncOutcome(notificationId, article.title, context.getString(R.string.proc_success_transferred), syncRes)
                 } else if (triggerSync) {
                     showSuccessNotification(notificationId, article.title, context.getString(R.string.proc_success_saved_for_sync))
                 } else {
@@ -808,6 +995,7 @@ class DocumentProcessor(private val context: Context) {
                 }
                 true
             } else {
+                tmpEpubFile.delete()
                 showErrorNotification(notificationId, context.getString(R.string.proc_error_epub_failed))
                 false
             }
@@ -816,16 +1004,29 @@ class DocumentProcessor(private val context: Context) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "processExtractedArticle failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "processExtractedArticle failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, SafeLogger.sanitizeMessage(e.localizedMessage)))
             false
         }
     }
 
-    suspend fun processEmailOrText(subject: String?, text: String, notificationId: Int = nextNotificationId()) = withContext(Dispatchers.IO) {
+    suspend fun processEmailOrText(
+        subject: String?,
+        text: String,
+        notificationId: Int = nextNotificationId(),
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
+    ) = withContext(Dispatchers.IO) {
         val trimmedText = text.trim()
         if (isHtmlContent(trimmedText)) {
-            processHtmlContent(trimmedText, baseUrl = null, subject = subject, notificationId = notificationId)
+            processHtmlContent(
+                trimmedText,
+                baseUrl = null,
+                subject = subject,
+                notificationId = notificationId,
+                remoteFolderOverride = remoteFolderOverride,
+                triggerSync = triggerSync
+            )
             return@withContext
         }
         val app = CrossSendApp.instance
@@ -1015,37 +1216,47 @@ class DocumentProcessor(private val context: Context) {
 
         val targetDir = File(app.libraryDir, "articles").apply { mkdirs() }
         val targetFile = ensureInsideDirectory(File(targetDir, fileName), targetDir)
+        val tmpFile = ensureInsideDirectory(File(targetDir, "${fileName}.tmp"), targetDir)
         val finalAuthor = extractedAuthor
 
-        val built = app.epubBuilder.buildEpub(
-            title = rawTitle,
-            author = finalAuthor,
-            sourceUrl = null,
-            contentHtml = finalContentHtml,
-            coverImage = null,
-            inlineImages = emptyList(),
-            outputFile = targetFile,
-            wordCount = wordCount,
-            readingTimeMinutes = readingTime,
-            publishedDate = extractedDate
-        )
-
-        if (built) {
-            val excerpt = bodyLines.filter { it.isNotBlank() }.joinToString(" ").take(300).takeIf { it.isNotBlank() }
-            val doc = DocumentEntity(
+        val built = try {
+            app.epubBuilder.buildEpub(
                 title = rawTitle,
                 author = finalAuthor,
                 sourceUrl = null,
-                type = DocumentType.ARTICLE,
-                localPath = targetFile.absolutePath,
-                fileName = fileName,
-                remotePath = "/crosssend/articles/$fileName",
-                fileSizeBytes = targetFile.length(),
-                createdAt = effectiveDate.time,
-                syncStatus = SyncStatus.PENDING_UPLOAD,
-                excerpt = excerpt
+                contentHtml = finalContentHtml,
+                coverImage = null,
+                inlineImages = emptyList(),
+                outputFile = tmpFile,
+                wordCount = wordCount,
+                readingTimeMinutes = readingTime,
+                publishedDate = extractedDate,
+                styling = currentSettings().toEpubStylingOptions()
             )
-            app.database.documentDao().insert(doc)
+        } finally {
+            // Cleaned below if failed
+        }
+
+        if (built) {
+            val remotePath = buildRemoteFilePath(DocumentType.ARTICLE, fileName, remoteFolderOverride)
+            val excerpt = bodyLines.filter { it.isNotBlank() }.joinToString(" ").take(300).takeIf { it.isNotBlank() }
+            app.reconcileMutex.withLock {
+                moveTempFileAtomically(tmpFile, targetFile)
+                val doc = DocumentEntity(
+                    title = rawTitle,
+                    author = finalAuthor,
+                    sourceUrl = null,
+                    type = DocumentType.ARTICLE,
+                    localPath = targetFile.absolutePath,
+                    fileName = fileName,
+                    remotePath = remotePath,
+                    fileSizeBytes = targetFile.length(),
+                    createdAt = effectiveDate.time,
+                    syncStatus = SyncStatus.PENDING_UPLOAD,
+                    excerpt = excerpt
+                )
+                app.database.documentDao().insert(doc)
+            }
 
             // Record debug dump for email/text
             val mockArticle = ExtractedArticle(
@@ -1067,18 +1278,27 @@ class DocumentProcessor(private val context: Context) {
                 epubFile = targetFile
             )
 
-            if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
-                app.syncManager.performSync()
-                showSuccessNotification(notificationId, rawTitle, context.getString(R.string.proc_success_transferred))
-            } else {
+            if (triggerSync && (app.wifiManager.isConnected() || app.webDavClient.isReachable())) {
+                val syncRes = app.syncManager.performSync()
+                handleSyncOutcome(notificationId, rawTitle, context.getString(R.string.proc_success_transferred), syncRes)
+            } else if (triggerSync) {
                 showSuccessNotification(notificationId, rawTitle, context.getString(R.string.proc_success_saved_articles))
+            } else {
+                dismissNotification(notificationId)
             }
         } else {
+            tmpFile.delete()
             showErrorNotification(notificationId, context.getString(R.string.proc_error_epub_failed))
         }
     }
 
-    suspend fun processPdfUri(uri: Uri, rawFileName: String? = null, notificationId: Int = nextNotificationId()) = withContext(Dispatchers.IO) {
+    suspend fun processPdfUri(
+        uri: Uri,
+        rawFileName: String? = null,
+        notificationId: Int = nextNotificationId(),
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
+    ) = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
         val rawName = rawFileName ?: getFileNameFromUri(uri) ?: context.getString(R.string.proc_default_pdf_filename)
         val resolvedFileName = sanitizeFileNameWithExtension(rawName, "pdf")
@@ -1089,18 +1309,24 @@ class DocumentProcessor(private val context: Context) {
         try {
             val extracted = app.pdfExtractor.extractFromUri(uri, fallbackTitle)
             val coverBitmap = app.pdfExtractor.renderFirstPageAsBitmap(uri)
-            processExtractedPdf(extracted, coverBitmap, resolvedFileName, notificationId)
+            processExtractedPdf(extracted, coverBitmap, resolvedFileName, notificationId, remoteFolderOverride, triggerSync)
         } catch (e: Exception) {
             if (e is CancellationException) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "PDF processing failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_pdf, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "PDF processing failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_pdf, SafeLogger.sanitizeMessage(e.localizedMessage)))
         }
     }
 
-    private suspend fun processPdfFile(file: File, rawFileName: String? = null, notificationId: Int = nextNotificationId()) = withContext(Dispatchers.IO) {
+    private suspend fun processPdfFile(
+        file: File,
+        rawFileName: String? = null,
+        notificationId: Int = nextNotificationId(),
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
+    ) = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
         val rawName = rawFileName ?: file.name.ifBlank { context.getString(R.string.proc_default_pdf_filename) }
         val resolvedFileName = sanitizeFileNameWithExtension(rawName, "pdf")
@@ -1111,14 +1337,14 @@ class DocumentProcessor(private val context: Context) {
         try {
             val extracted = app.pdfExtractor.extractFromFile(file, fallbackTitle)
             val coverBitmap = app.pdfExtractor.renderFirstPageAsBitmap(file)
-            processExtractedPdf(extracted, coverBitmap, resolvedFileName, notificationId)
+            processExtractedPdf(extracted, coverBitmap, resolvedFileName, notificationId, remoteFolderOverride, triggerSync)
         } catch (e: Exception) {
             if (e is CancellationException) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "PDF processing failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_pdf, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "PDF processing failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_pdf, SafeLogger.sanitizeMessage(e.localizedMessage)))
         }
     }
 
@@ -1126,12 +1352,17 @@ class DocumentProcessor(private val context: Context) {
         extracted: ExtractedPdf,
         coverBitmap: android.graphics.Bitmap?,
         resolvedFileName: String,
-        notificationId: Int
+        notificationId: Int,
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
     ) {
         val app = CrossSendApp.instance
         val coverImage = if (coverBitmap != null) {
-            val opt = app.imageOptimizer.optimizeBitmap(coverBitmap, isCover = true)
-            coverBitmap.recycle()
+            val opt = try {
+                app.imageOptimizer.optimizeBitmap(coverBitmap, isCover = true)
+            } finally {
+                coverBitmap.recycle()
+            }
             opt
         } else null
 
@@ -1144,50 +1375,62 @@ class DocumentProcessor(private val context: Context) {
         val docType = if (extracted.pageCount > 20) DocumentType.BOOK else DocumentType.ARTICLE
         val targetDir = File(app.libraryDir, docType.subfolder).apply { mkdirs() }
         val targetFile = ensureInsideDirectory(File(targetDir, fileName), targetDir)
+        val tmpFile = ensureInsideDirectory(File(targetDir, "${fileName}.tmp"), targetDir)
 
-        val built = app.epubBuilder.buildEpub(
-            title = extracted.title,
-            author = extracted.author,
-            sourceUrl = resolvedFileName,
-            contentHtml = finalContentHtml,
-            coverImage = coverImage,
-            inlineImages = emptyList(),
-            outputFile = targetFile,
-            wordCount = extracted.wordCount,
-            readingTimeMinutes = extracted.readingTimeMinutes
-        )
-
-        if (built) {
-            com.crosssend.app.util.EpubCoverLoader.saveColorCoverForDocument(context, fileName, coverImage?.colorCoverFile)
+        val built = try {
+            val success = app.epubBuilder.buildEpub(
+                title = extracted.title,
+                author = extracted.author,
+                sourceUrl = resolvedFileName,
+                contentHtml = finalContentHtml,
+                coverImage = coverImage,
+                inlineImages = emptyList(),
+                outputFile = tmpFile,
+                wordCount = extracted.wordCount,
+                readingTimeMinutes = extracted.readingTimeMinutes,
+                styling = currentSettings().toEpubStylingOptions()
+            )
+            if (success) {
+                com.crosssend.app.util.EpubCoverLoader.saveColorCoverForDocument(context, fileName, coverImage?.colorCoverFile)
+            }
+            success
+        } finally {
+            coverImage?.localFile?.delete()
+            coverImage?.colorCoverFile?.delete()
         }
-        coverImage?.localFile?.delete()
-        coverImage?.colorCoverFile?.delete()
 
         val excerpt = org.jsoup.Jsoup.parse(finalContentHtml).text().take(300).takeIf { it.isNotBlank() }
 
         if (built) {
-            val doc = DocumentEntity(
-                title = extracted.title,
-                author = extracted.author,
-                sourceUrl = null,
-                type = docType,
-                localPath = targetFile.absolutePath,
-                fileName = fileName,
-                remotePath = "/crosssend/${docType.subfolder}/$fileName",
-                fileSizeBytes = targetFile.length(),
-                syncStatus = SyncStatus.PENDING_UPLOAD,
-                excerpt = excerpt
-            )
-            app.database.documentDao().insert(doc)
+            val remotePath = buildRemoteFilePath(docType, fileName, remoteFolderOverride)
+            app.reconcileMutex.withLock {
+                moveTempFileAtomically(tmpFile, targetFile)
+                val doc = DocumentEntity(
+                    title = extracted.title,
+                    author = extracted.author,
+                    sourceUrl = null,
+                    type = docType,
+                    localPath = targetFile.absolutePath,
+                    fileName = fileName,
+                    remotePath = remotePath,
+                    fileSizeBytes = targetFile.length(),
+                    syncStatus = SyncStatus.PENDING_UPLOAD,
+                    excerpt = excerpt
+                )
+                app.database.documentDao().insert(doc)
+            }
 
-            if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
+            if (triggerSync && (app.wifiManager.isConnected() || app.webDavClient.isReachable())) {
                 showProgressNotification(notificationId, extracted.title, context.getString(R.string.proc_progress_transferring), indeterminate = true)
-                app.syncManager.performSync()
-                showSuccessNotification(notificationId, extracted.title, context.getString(R.string.proc_success_pdf_transferred))
-            } else {
+                val syncRes = app.syncManager.performSync()
+                handleSyncOutcome(notificationId, extracted.title, context.getString(R.string.proc_success_pdf_transferred), syncRes)
+            } else if (triggerSync) {
                 showSuccessNotification(notificationId, extracted.title, context.getString(R.string.proc_success_pdf_saved))
+            } else {
+                dismissNotification(notificationId)
             }
         } else {
+            tmpFile.delete()
             showErrorNotification(notificationId, context.getString(R.string.proc_error_eink_failed))
         }
     }
@@ -1211,8 +1454,8 @@ class DocumentProcessor(private val context: Context) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "processAcsmUri failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_acsm, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "processAcsmUri failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_acsm, SafeLogger.sanitizeMessage(e.localizedMessage)))
         }
     }
 
@@ -1233,8 +1476,8 @@ class DocumentProcessor(private val context: Context) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "processAcsmFile failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_acsm, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "processAcsmFile failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_acsm, SafeLogger.sanitizeMessage(e.localizedMessage)))
         }
     }
 
@@ -1284,7 +1527,6 @@ class DocumentProcessor(private val context: Context) {
                     if (resp.isSuccessful) {
                         val bodyBytes = resp.body?.let { EInkImageOptimizer.readBoundedBytes(it, 50L * 1024 * 1024) }
                         if (bodyBytes != null && bodyBytes.size > 100) {
-                            // Require valid EPUB (ZIP header 'PK') or PDF ('%PDF') magic bytes
                             val isZip = bodyBytes.size >= 4 && bodyBytes[0] == 0x50.toByte() && bodyBytes[1] == 0x4B.toByte()
                             val isPdf = bodyBytes.size >= 4 && bodyBytes[0] == 0x25.toByte() && bodyBytes[1] == 0x50.toByte() && bodyBytes[2] == 0x44.toByte()
 
@@ -1292,14 +1534,18 @@ class DocumentProcessor(private val context: Context) {
                                 val ext = if (isPdf) "pdf" else "epub"
                                 val safeDownloadFileName = sanitizeFileNameWithExtension("${cleanTitle}.$ext", ext)
                                 val targetFile = ensureInsideDirectory(File(booksDir, safeDownloadFileName), booksDir)
-                                targetFile.writeBytes(bodyBytes)
+                                val tmpFile = ensureInsideDirectory(File(booksDir, "${safeDownloadFileName}.tmp"), booksDir)
+                                tmpFile.writeBytes(bodyBytes)
+                                app.reconcileMutex.withLock {
+                                    moveTempFileAtomically(tmpFile, targetFile)
+                                }
                                 downloadedFile = targetFile
                             }
                         }
                     }
                 }
             } catch (e: Exception) {
-                Log.d(tag, "Direct download from ACSM <src> failed (expected if DRM-protected): ${e.message}")
+                SafeLogger.d(tag, "Direct download from ACSM <src> skipped (likely DRM-protected)")
             }
         }
 
@@ -1309,45 +1555,52 @@ class DocumentProcessor(private val context: Context) {
         val isEpub = downloaded != null
         val remotePath: String
 
-        if (downloaded != null) {
-            finalFile = downloaded
-            finalFileName = downloaded.name
-            remotePath = "/crosssend/books/$finalFileName"
-        } else {
-            // Save the .acsm file. It must land in "/" on the reader for Protected Content
-            finalFileName = sanitizeFileNameWithExtension("${cleanTitle}.acsm", "acsm")
-            finalFile = ensureInsideDirectory(File(booksDir, finalFileName), booksDir)
-            finalFile.writeBytes(acsmBytes)
-            remotePath = "/$finalFileName"
+        val booksFolder = currentSettings().defaultFolderFor(DocumentType.BOOK)
+        app.reconcileMutex.withLock {
+            if (downloaded != null) {
+                finalFile = downloaded
+                finalFileName = downloaded.name
+                remotePath = buildRemoteFilePath(DocumentType.BOOK, finalFileName, null)
+            } else {
+                // Save the .acsm file. It must land in "/" on the reader for Protected Content
+                finalFileName = sanitizeFileNameWithExtension("${cleanTitle}.acsm", "acsm")
+                finalFile = ensureInsideDirectory(File(booksDir, finalFileName), booksDir)
+                val tmpAcsm = ensureInsideDirectory(File(booksDir, "${finalFileName}.tmp"), booksDir)
+                tmpAcsm.writeBytes(acsmBytes)
+                moveTempFileAtomically(tmpAcsm, finalFile)
+                remotePath = "/$finalFileName"
+            }
+
+            val doc = DocumentEntity(
+                title = extractedTitle ?: cleanTitle,
+                author = author,
+                sourceUrl = srcUrl,
+                type = DocumentType.BOOK,
+                localPath = finalFile.absolutePath,
+                fileName = finalFileName,
+                remotePath = remotePath,
+                fileSizeBytes = finalFile.length(),
+                syncStatus = SyncStatus.PENDING_UPLOAD
+            )
+            app.database.documentDao().insert(doc)
         }
 
-        val doc = DocumentEntity(
-            title = extractedTitle ?: cleanTitle,
-            author = author,
-            sourceUrl = srcUrl,
-            type = DocumentType.BOOK,
-            localPath = finalFile.absolutePath,
-            fileName = finalFileName,
-            remotePath = remotePath,
-            fileSizeBytes = finalFile.length(),
-            syncStatus = SyncStatus.PENDING_UPLOAD
-        )
-        app.database.documentDao().insert(doc)
-
         if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
-            app.syncManager.performSync()
-            val targetInfo = if (isEpub) "/crosssend/books/" else context.getString(R.string.proc_acsm_root_dir)
-            showSuccessNotification(notificationId, doc.title, context.getString(R.string.proc_success_acsm_transferred, targetInfo))
+            val syncRes = app.syncManager.performSync()
+            val targetInfo = if (isEpub) "$booksFolder/" else context.getString(R.string.proc_acsm_root_dir)
+            handleSyncOutcome(notificationId, extractedTitle ?: cleanTitle, context.getString(R.string.proc_success_acsm_transferred, targetInfo), syncRes)
         } else {
-            val targetInfo = if (isEpub) "in /crosssend/books/" else "in /"
-            showSuccessNotification(notificationId, doc.title, context.getString(R.string.proc_success_acsm_provided, targetInfo))
+            val targetInfo = if (isEpub) "in $booksFolder/" else "in /"
+            showSuccessNotification(notificationId, extractedTitle ?: cleanTitle, context.getString(R.string.proc_success_acsm_provided, targetInfo))
         }
     }
 
     private suspend fun processStagedFile(
         staged: StagedShareFile,
         mimeType: String,
-        notificationId: Int = nextNotificationId()
+        notificationId: Int = nextNotificationId(),
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
     ) = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
         val rawFileName = staged.displayName.ifBlank { "${context.getString(R.string.proc_default_file_prefix)}_${System.currentTimeMillis()}" }
@@ -1355,7 +1608,7 @@ class DocumentProcessor(private val context: Context) {
 
         val isPdf = fileName.endsWith(".pdf", true) || mimeType.contains("pdf", ignoreCase = true)
         if (isPdf) {
-            processPdfFile(staged.file, fileName, notificationId)
+            processPdfFile(staged.file, fileName, notificationId, remoteFolderOverride = remoteFolderOverride, triggerSync = triggerSync)
             return@withContext
         }
 
@@ -1377,7 +1630,7 @@ class DocumentProcessor(private val context: Context) {
             val htmlContent = String(htmlBytes, Charsets.UTF_8)
             if (htmlContent.isNotBlank()) {
                 val titleFromFileName = fileName.substringBeforeLast('.')
-                processHtmlContent(htmlContent, baseUrl = null, subject = titleFromFileName, notificationId = notificationId)
+                processHtmlContent(htmlContent, baseUrl = null, subject = titleFromFileName, notificationId = notificationId, remoteFolderOverride = remoteFolderOverride, triggerSync = triggerSync)
                 return@withContext
             }
         }
@@ -1390,10 +1643,10 @@ class DocumentProcessor(private val context: Context) {
 
         if (isImage) {
             if (fileName.matches(Regex("""^\d{15,}\.(png|jpg|webp)$""")) || rawFileName.contains("screenshot", ignoreCase = true)) {
-                Log.w(tag, "Ignoring browser screenshot thumbnail")
+                SafeLogger.w(tag, "Ignoring browser screenshot thumbnail")
                 return@withContext
             }
-            processSleepScreenFile(staged.file, rawFileName, notificationId)
+            processSleepScreenFile(staged.file, rawFileName, notificationId, remoteFolderOverride = remoteFolderOverride, triggerSync = triggerSync)
             return@withContext
         }
 
@@ -1411,70 +1664,78 @@ class DocumentProcessor(private val context: Context) {
         try {
             val targetDir = File(app.libraryDir, docType.subfolder).apply { mkdirs() }
             val targetFile = ensureInsideDirectory(File(targetDir, fileName), targetDir)
+            val tmpFile = ensureInsideDirectory(File(targetDir, "${fileName}.tmp"), targetDir)
 
             val copiedBytes = try {
                 staged.file.inputStream().use { input ->
-                    FileOutputStream(targetFile).use { output ->
+                    FileOutputStream(tmpFile).use { output ->
                         copyBounded(input, output, MAX_FILE_COPY_BYTES)
                     }
                 }
             } catch (e: Exception) {
-                targetFile.delete()
+                tmpFile.delete()
                 throw e
             }
             if (copiedBytes < 0L) {
-                targetFile.delete()
+                tmpFile.delete()
                 throw IllegalArgumentException(context.getString(R.string.proc_error_file_too_large))
             }
 
-            val remotePath = "/crosssend/${docType.subfolder}/$fileName"
+            val remotePath = buildRemoteFilePath(docType, fileName, remoteFolderOverride)
 
-            val doc = DocumentEntity(
-                title = fileName.substringBeforeLast('.'),
-                author = null,
-                sourceUrl = null,
-                type = docType,
-                localPath = targetFile.absolutePath,
-                fileName = fileName,
-                remotePath = remotePath,
-                fileSizeBytes = targetFile.length(),
-                syncStatus = SyncStatus.PENDING_UPLOAD
-            )
-            app.database.documentDao().insert(doc)
+            app.reconcileMutex.withLock {
+                moveTempFileAtomically(tmpFile, targetFile)
+                val doc = DocumentEntity(
+                    title = fileName.substringBeforeLast('.'),
+                    author = null,
+                    sourceUrl = null,
+                    type = docType,
+                    localPath = targetFile.absolutePath,
+                    fileName = fileName,
+                    remotePath = remotePath,
+                    fileSizeBytes = targetFile.length(),
+                    syncStatus = SyncStatus.PENDING_UPLOAD
+                )
+                app.database.documentDao().insert(doc)
+            }
 
-            if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
-                app.syncManager.performSync()
-                showSuccessNotification(notificationId, fileName, context.getString(R.string.proc_success_transferred))
-            } else {
+            if (triggerSync && (app.wifiManager.isConnected() || app.webDavClient.isReachable())) {
+                val syncRes = app.syncManager.performSync()
+                handleSyncOutcome(notificationId, fileName, context.getString(R.string.proc_success_transferred), syncRes)
+            } else if (triggerSync) {
                 showSuccessNotification(notificationId, fileName, context.getString(R.string.proc_success_saved_in, remotePath))
+            } else {
+                dismissNotification(notificationId)
             }
         } catch (e: Exception) {
             if (e is CancellationException) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "processStagedFile failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_copying_file, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "processStagedFile failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_copying_file, SafeLogger.sanitizeMessage(e.localizedMessage)))
         }
     }
 
     private suspend fun processSleepScreenFile(
         file: File,
         rawFileName: String,
-        notificationId: Int
+        notificationId: Int,
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
     ): DocumentEntity? = withContext(Dispatchers.IO) {
         try {
             showProgressNotification(notificationId, "Sleepscreen", context.getString(R.string.proc_progress_optimizing_sleepscreen), indeterminate = true)
             val bytes = file.inputStream().use { readBoundedBytes(it, MAX_SLEEP_IMAGE_BYTES) }
                 ?: throw IllegalArgumentException(context.getString(R.string.proc_error_image_too_large))
-            processSleepScreenBytes(bytes, rawFileName, notificationId)
+            processSleepScreenBytes(bytes, rawFileName, notificationId, remoteFolderOverride, triggerSync)
         } catch (e: Exception) {
             if (e is CancellationException) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "processSleepScreenFile failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_sleepscreen, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "processSleepScreenFile failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_sleepscreen, SafeLogger.sanitizeMessage(e.localizedMessage)))
             null
         }
     }
@@ -1482,7 +1743,9 @@ class DocumentProcessor(private val context: Context) {
     private suspend fun processSleepScreenBytes(
         bytes: ByteArray,
         rawFileName: String,
-        notificationId: Int
+        notificationId: Int,
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
     ): DocumentEntity {
         val app = CrossSendApp.instance
         val bmpBytes = imageOptimizer.optimizeSleepImage(bytes)
@@ -1493,34 +1756,47 @@ class DocumentProcessor(private val context: Context) {
 
         val sleepDir = File(app.libraryDir, DocumentType.SLEEP.subfolder).apply { mkdirs() }
         val targetFile = ensureInsideDirectory(File(sleepDir, finalFileName), sleepDir)
-        targetFile.writeBytes(bmpBytes)
+        val tmpFile = ensureInsideDirectory(File(sleepDir, "${finalFileName}.tmp"), sleepDir)
+        tmpFile.writeBytes(bmpBytes)
 
-        val remotePath = "/sleep/$finalFileName"
-        val doc = DocumentEntity(
-            title = baseName,
-            author = null,
-            sourceUrl = null,
-            type = DocumentType.SLEEP,
-            localPath = targetFile.absolutePath,
-            fileName = finalFileName,
-            remotePath = remotePath,
-            fileSizeBytes = targetFile.length(),
-            createdAt = System.currentTimeMillis(),
-            syncStatus = SyncStatus.PENDING_UPLOAD
-        )
-        app.database.documentDao().insert(doc)
+        val remotePath = buildRemoteFilePath(DocumentType.SLEEP, finalFileName, remoteFolderOverride)
+        val doc = app.reconcileMutex.withLock {
+            moveTempFileAtomically(tmpFile, targetFile)
+            val entity = DocumentEntity(
+                title = baseName,
+                author = null,
+                sourceUrl = null,
+                type = DocumentType.SLEEP,
+                localPath = targetFile.absolutePath,
+                fileName = finalFileName,
+                remotePath = remotePath,
+                fileSizeBytes = targetFile.length(),
+                createdAt = System.currentTimeMillis(),
+                syncStatus = SyncStatus.PENDING_UPLOAD
+            )
+            val insertedId = app.database.documentDao().insert(entity)
+            entity.copy(id = insertedId)
+        }
 
-        if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
+        if (triggerSync && (app.wifiManager.isConnected() || app.webDavClient.isReachable())) {
             showProgressNotification(notificationId, baseName, context.getString(R.string.proc_progress_transferring), indeterminate = true)
-            app.syncManager.performSync()
-            showSuccessNotification(notificationId, baseName, context.getString(R.string.proc_success_sleepscreen_transferred))
-        } else {
+            val syncRes = app.syncManager.performSync()
+            handleSyncOutcome(notificationId, baseName, context.getString(R.string.proc_success_sleepscreen_transferred), syncRes)
+        } else if (triggerSync) {
             showSuccessNotification(notificationId, baseName, context.getString(R.string.proc_success_sleepscreen_saved))
+        } else {
+            dismissNotification(notificationId)
         }
         return doc
     }
 
-    suspend fun processFileUri(uri: Uri, mimeType: String, notificationId: Int = nextNotificationId()) = withContext(Dispatchers.IO) {
+    suspend fun processFileUri(
+        uri: Uri,
+        mimeType: String,
+        notificationId: Int = nextNotificationId(),
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
+    ) = withContext(Dispatchers.IO) {
         if (!isSafeSharedUri(uri)) {
             throw SecurityException(context.getString(R.string.proc_error_internal_access_denied))
         }
@@ -1530,7 +1806,7 @@ class DocumentProcessor(private val context: Context) {
 
         val isPdf = fileName.endsWith(".pdf", true) || mimeType.contains("pdf")
         if (isPdf) {
-            processPdfUri(uri, fileName, notificationId)
+            processPdfUri(uri, fileName, notificationId, remoteFolderOverride = remoteFolderOverride, triggerSync = triggerSync)
             return@withContext
         }
 
@@ -1554,7 +1830,7 @@ class DocumentProcessor(private val context: Context) {
                 val htmlContent = String(htmlBytes, Charsets.UTF_8)
                 if (htmlContent.isNotBlank()) {
                     val titleFromFileName = fileName.substringBeforeLast('.')
-                    processHtmlContent(htmlContent, baseUrl = null, subject = titleFromFileName, notificationId = notificationId)
+                    processHtmlContent(htmlContent, baseUrl = null, subject = titleFromFileName, notificationId = notificationId, remoteFolderOverride = remoteFolderOverride, triggerSync = triggerSync)
                     return@withContext
                 }
             }
@@ -1569,10 +1845,10 @@ class DocumentProcessor(private val context: Context) {
         if (isImage) {
             // Drop browser screenshot thumbnail hashes completely
             if (fileName.matches(Regex("""^\d{15,}\.(png|jpg|webp)$""")) || uri.toString().contains("screenshot", ignoreCase = true)) {
-                Log.w(tag, "Ignoring browser screenshot thumbnail: $fileName")
+                SafeLogger.w(tag, "Ignoring browser screenshot thumbnail")
                 return@withContext
             }
-            processSleepScreenUri(uri, notificationId)
+            processSleepScreenUri(uri, notificationId, remoteFolderOverride = remoteFolderOverride, triggerSync = triggerSync)
             return@withContext
         }
 
@@ -1590,52 +1866,58 @@ class DocumentProcessor(private val context: Context) {
         try {
             val targetDir = File(app.libraryDir, docType.subfolder).apply { mkdirs() }
             val targetFile = ensureInsideDirectory(File(targetDir, fileName), targetDir)
+            val tmpFile = ensureInsideDirectory(File(targetDir, "${fileName}.tmp"), targetDir)
 
             val inputStream = context.contentResolver.openInputStream(uri)
                 ?: throw IllegalArgumentException(context.getString(R.string.proc_error_file_read))
             val copiedBytes = try {
                 inputStream.use { input ->
-                    FileOutputStream(targetFile).use { output ->
+                    FileOutputStream(tmpFile).use { output ->
                         copyBounded(input, output, MAX_FILE_COPY_BYTES)
                     }
                 }
             } catch (e: Exception) {
-                targetFile.delete()
+                tmpFile.delete()
                 throw e
             }
             if (copiedBytes < 0L) {
-                targetFile.delete()
+                tmpFile.delete()
                 throw IllegalArgumentException(context.getString(R.string.proc_error_file_too_large))
             }
 
-            val remotePath = "/crosssend/${docType.subfolder}/$fileName"
+            val remotePath = buildRemoteFilePath(docType, fileName, remoteFolderOverride)
 
-            val doc = DocumentEntity(
-                title = fileName.substringBeforeLast('.'),
-                author = null,
-                sourceUrl = null,
-                type = docType,
-                localPath = targetFile.absolutePath,
-                fileName = fileName,
-                remotePath = remotePath,
-                fileSizeBytes = targetFile.length(),
-                syncStatus = SyncStatus.PENDING_UPLOAD
-            )
-            app.database.documentDao().insert(doc)
+            app.reconcileMutex.withLock {
+                moveTempFileAtomically(tmpFile, targetFile)
+                val doc = DocumentEntity(
+                    title = fileName.substringBeforeLast('.'),
+                    author = null,
+                    sourceUrl = null,
+                    type = docType,
+                    localPath = targetFile.absolutePath,
+                    fileName = fileName,
+                    remotePath = remotePath,
+                    fileSizeBytes = targetFile.length(),
+                    syncStatus = SyncStatus.PENDING_UPLOAD
+                )
+                app.database.documentDao().insert(doc)
+            }
 
-            if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
-                app.syncManager.performSync()
-                showSuccessNotification(notificationId, fileName, context.getString(R.string.proc_success_transferred))
-            } else {
+            if (triggerSync && (app.wifiManager.isConnected() || app.webDavClient.isReachable())) {
+                val syncRes = app.syncManager.performSync()
+                handleSyncOutcome(notificationId, fileName, context.getString(R.string.proc_success_transferred), syncRes)
+            } else if (triggerSync) {
                 showSuccessNotification(notificationId, fileName, context.getString(R.string.proc_success_saved_in, remotePath))
+            } else {
+                dismissNotification(notificationId)
             }
         } catch (e: Exception) {
             if (e is CancellationException) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "processFileUri failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_copying_file, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "processFileUri failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_copying_file, SafeLogger.sanitizeMessage(e.localizedMessage)))
         }
     }
 
@@ -1644,9 +1926,14 @@ class DocumentProcessor(private val context: Context) {
      * hardware resolution (480x800 for X4, 528x792 for X3), saves as DocumentType.SLEEP,
      * and triggers device sync.
      */
-    suspend fun processSleepScreenUri(uri: Uri, notificationId: Int = nextNotificationId()): DocumentEntity? = withContext(Dispatchers.IO) {
+    suspend fun processSleepScreenUri(
+        uri: Uri,
+        notificationId: Int = nextNotificationId(),
+        remoteFolderOverride: String? = null,
+        triggerSync: Boolean = true
+    ): DocumentEntity? = withContext(Dispatchers.IO) {
         if (!isSafeSharedUri(uri)) {
-            Log.w(tag, "processSleepScreenUri: Unsafe URI rejected: $uri")
+            SafeLogger.w(tag, "processSleepScreenUri: Unsafe URI rejected: ${SafeLogger.redactUrl(uri.toString())}")
             showErrorNotification(notificationId, context.getString(R.string.proc_error_internal_access_denied))
             return@withContext null
         }
@@ -1658,47 +1945,15 @@ class DocumentProcessor(private val context: Context) {
             val bytes = inputStream.use { readBoundedBytes(it, MAX_SLEEP_IMAGE_BYTES) }
                 ?: throw IllegalArgumentException(context.getString(R.string.proc_error_image_too_large))
 
-            val bmpBytes = imageOptimizer.optimizeSleepImage(bytes)
-                ?: throw IllegalStateException(context.getString(R.string.proc_error_bmp_convert))
-
             val rawFileName = getFileNameFromUri(uri) ?: "sleep_${System.currentTimeMillis()}"
-            val baseName = sanitizeFilename(rawFileName.substringBeforeLast('.'))
-            val finalFileName = "${baseName}.bmp"
-
-            val sleepDir = File(app.libraryDir, DocumentType.SLEEP.subfolder).apply { mkdirs() }
-            val targetFile = ensureInsideDirectory(File(sleepDir, finalFileName), sleepDir)
-            targetFile.writeBytes(bmpBytes)
-
-            val remotePath = "/sleep/$finalFileName"
-            val doc = DocumentEntity(
-                title = baseName,
-                author = null,
-                sourceUrl = null,
-                type = DocumentType.SLEEP,
-                localPath = targetFile.absolutePath,
-                fileName = finalFileName,
-                remotePath = remotePath,
-                fileSizeBytes = targetFile.length(),
-                createdAt = System.currentTimeMillis(),
-                syncStatus = SyncStatus.PENDING_UPLOAD
-            )
-            app.database.documentDao().insert(doc)
-
-            if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
-                showProgressNotification(notificationId, baseName, context.getString(R.string.proc_progress_transferring), indeterminate = true)
-                app.syncManager.performSync()
-                showSuccessNotification(notificationId, baseName, context.getString(R.string.proc_success_sleepscreen_transferred))
-            } else {
-                showSuccessNotification(notificationId, baseName, context.getString(R.string.proc_success_sleepscreen_saved))
-            }
-            doc
+            processSleepScreenBytes(bytes, rawFileName, notificationId, remoteFolderOverride, triggerSync)
         } catch (e: Exception) {
             if (e is CancellationException) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "processSleepScreenUri failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_sleepscreen, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "processSleepScreenUri failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_sleepscreen, SafeLogger.sanitizeMessage(e.localizedMessage)))
             null
         }
     }
@@ -1706,7 +1961,7 @@ class DocumentProcessor(private val context: Context) {
     suspend fun processRssItem(item: RssItem, feedTitle: String, notificationId: Int = nextNotificationId()) = withContext(Dispatchers.IO) {
         val app = CrossSendApp.instance
         val targetUrl = if (item.link.isNotBlank() && EInkImageOptimizer.isSafeExternalImageUrl(item.link)) {
-            normalizeExternalHttpsUrl(item.link)
+            normalizeExternalHttpsUrl(item.link, stripTracking = shouldStripTracking())
         } else {
             ""
         }
@@ -1734,6 +1989,7 @@ class DocumentProcessor(private val context: Context) {
 
             val articlesDir = File(app.libraryDir, "articles").apply { mkdirs() }
             val targetEpubFile = ensureInsideDirectory(File(articlesDir, fileName), articlesDir)
+            val tmpEpubFile = ensureInsideDirectory(File(articlesDir, "${fileName}.tmp"), articlesDir)
 
             showProgressNotification(notificationId, item.title, context.getString(R.string.proc_progress_optimizing_images), indeterminate = true)
             val (coverImage, inlineImages) = optimizeArticleImagesConcurrently(
@@ -1743,42 +1999,49 @@ class DocumentProcessor(private val context: Context) {
             )
             val remainingImages = if (coverImage != null) item.imageUrls.drop(1) else item.imageUrls
 
-            showProgressNotification(notificationId, item.title, context.getString(R.string.proc_progress_creating_epub), indeterminate = true)
-            val built = app.epubBuilder.buildEpub(
-                title = item.title,
-                subtitle = item.description,
-                author = item.author ?: feedTitle,
-                sourceUrl = item.link,
-                contentHtml = finalContentHtml,
-                coverImage = coverImage,
-                inlineImages = inlineImages,
-                outputFile = targetEpubFile,
-                wordCount = item.wordCount,
-                readingTimeMinutes = item.readingTimeMinutes,
-                publishedDate = item.publishedDate
-            )
-
-            if (built) {
-                com.crosssend.app.util.EpubCoverLoader.saveColorCoverForDocument(context, fileName, coverImage?.colorCoverFile)
+            val built = try {
+                showProgressNotification(notificationId, item.title, context.getString(R.string.proc_progress_creating_epub), indeterminate = true)
+                val success = app.epubBuilder.buildEpub(
+                    title = item.title,
+                    subtitle = item.description,
+                    author = item.author ?: feedTitle,
+                    sourceUrl = item.link,
+                    contentHtml = finalContentHtml,
+                    coverImage = coverImage,
+                    inlineImages = inlineImages,
+                    outputFile = tmpEpubFile,
+                    wordCount = item.wordCount,
+                    readingTimeMinutes = item.readingTimeMinutes,
+                    publishedDate = item.publishedDate,
+                    styling = currentSettings().toEpubStylingOptions()
+                )
+                if (success) {
+                    com.crosssend.app.util.EpubCoverLoader.saveColorCoverForDocument(context, fileName, coverImage?.colorCoverFile)
+                }
+                success
+            } finally {
+                coverImage?.localFile?.delete()
+                coverImage?.colorCoverFile?.delete()
+                inlineImages.forEach { it.localFile.delete() }
             }
-            coverImage?.localFile?.delete()
-            coverImage?.colorCoverFile?.delete()
-            inlineImages.forEach { it.localFile.delete() }
 
             val excerpt = item.description?.takeIf { it.isNotBlank() }?.let { org.jsoup.Jsoup.parse(it).text() }?.take(300)
                 ?: org.jsoup.Jsoup.parse(finalContentHtml).text().take(300).takeIf { it.isNotBlank() }
 
             if (built) {
-                upsertArticleDocument(
-                    title = item.title,
-                    author = item.author ?: feedTitle,
-                    sourceUrl = item.link,
-                    targetFile = targetEpubFile,
-                    fileName = fileName,
-                    excerpt = excerpt,
-                    renderMode = RenderMode.READER,
-                    publishedTimestamp = effectiveDate.time
-                )
+                app.reconcileMutex.withLock {
+                    moveTempFileAtomically(tmpEpubFile, targetEpubFile)
+                    upsertArticleDocument(
+                        title = item.title,
+                        author = item.author ?: feedTitle,
+                        sourceUrl = item.link,
+                        targetFile = targetEpubFile,
+                        fileName = fileName,
+                        excerpt = excerpt,
+                        renderMode = RenderMode.READER,
+                        publishedTimestamp = effectiveDate.time
+                    )
+                }
 
                 // Record debug dump for RSS item
                 val mockArticle = ExtractedArticle(
@@ -1805,12 +2068,13 @@ class DocumentProcessor(private val context: Context) {
                 )
 
                 if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
-                    app.syncManager.performSync()
-                    showSuccessNotification(notificationId, item.title, context.getString(R.string.proc_success_transferred))
+                    val syncRes = app.syncManager.performSync()
+                    handleSyncOutcome(notificationId, item.title, context.getString(R.string.proc_success_transferred), syncRes)
                 } else {
                     showSuccessNotification(notificationId, item.title, context.getString(R.string.proc_success_saved_for_sync))
                 }
             } else {
+                tmpEpubFile.delete()
                 showErrorNotification(notificationId, context.getString(R.string.proc_error_epub_failed))
             }
         } catch (e: Exception) {
@@ -1818,8 +2082,8 @@ class DocumentProcessor(private val context: Context) {
                 dismissNotification(notificationId)
                 throw e
             }
-            Log.e(tag, "processRssItem failed", e)
-            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, e.localizedMessage ?: ""))
+            SafeLogger.e(tag, "processRssItem failed", e)
+            showErrorNotification(notificationId, context.getString(R.string.proc_error_prefix, SafeLogger.sanitizeMessage(e.localizedMessage)))
         }
     }
 
@@ -1846,7 +2110,7 @@ class DocumentProcessor(private val context: Context) {
         try {
             NotificationManagerCompat.from(context).notify(notificationId, builder.build())
         } catch (e: SecurityException) {
-            Log.w(tag, "Notification permission missing", e)
+            SafeLogger.w(tag, "Notification permission missing", e)
         }
     }
 
@@ -1854,21 +2118,46 @@ class DocumentProcessor(private val context: Context) {
         try {
             NotificationManagerCompat.from(context).cancel(notificationId)
         } catch (e: Exception) {
-            Log.w(tag, "Failed to dismiss notification", e)
+            SafeLogger.w(tag, "Failed to dismiss notification", e)
         }
     }
 
     fun showSuccessNotification(notificationId: Int, title: String, subtitle: String) {
-        // No confirmation notification desired: progress notification is dismissed upon completion
-        dismissNotification(notificationId)
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context, notificationId, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val builder = NotificationCompat.Builder(context, CHANNEL_ALERTS_ID)
+            .setSmallIcon(R.drawable.ic_launcher_monochrome)
+            .setContentTitle(title)
+            .setContentText(subtitle)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setOngoing(false)
+            .setOnlyAlertOnce(true)
+            .setProgress(0, 0, false)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setVibrate(null)
+            .setSound(null)
+
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, builder.build())
+        } catch (e: SecurityException) {
+            SafeLogger.w(tag, "Notification permission missing", e)
+        }
     }
 
     fun showErrorNotification(notificationId: Int, error: String) {
+        val safeError = SafeLogger.sanitizeMessage(error)
         val builder = NotificationCompat.Builder(context, CHANNEL_ALERTS_ID)
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle(context.getString(R.string.proc_notification_alert_title))
-            .setContentText(error)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(error))
+            .setContentText(safeError)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(safeError))
             .setAutoCancel(true)
             .setOngoing(false)
             .setProgress(0, 0, false)
@@ -1880,7 +2169,7 @@ class DocumentProcessor(private val context: Context) {
         try {
             NotificationManagerCompat.from(context).notify(notificationId, builder.build())
         } catch (e: SecurityException) {
-            Log.w(tag, "Notification permission missing", e)
+            SafeLogger.w(tag, "Notification permission missing", e)
         }
     }
 
@@ -1913,7 +2202,7 @@ class DocumentProcessor(private val context: Context) {
         try {
             NotificationManagerCompat.from(context).notify(notificationId, builder.build())
         } catch (e: SecurityException) {
-            Log.w(tag, "Notification permission missing", e)
+            SafeLogger.w(tag, "Notification permission missing", e)
         }
     }
 
@@ -2056,35 +2345,37 @@ class DocumentProcessor(private val context: Context) {
         coverUrl: String?,
         inlineUrls: List<String>
     ): Pair<OptimizedImage?, List<OptimizedImage>> = coroutineScope {
+        val settings = currentSettings()
         val semaphore = Semaphore(3)
         val coverDeferred = coverUrl?.let { url ->
             async {
                 semaphore.withPermit {
-                    imageOptimizer.optimizeImage(url, 0, isCover = true)
+                    imageOptimizer.optimizeImage(
+                        url,
+                        0,
+                        isCover = true,
+                        maxDimOverride = settings.imageMaxDim,
+                        jpegQualityOverride = settings.imageJpegQuality
+                    )
                 }
             }
         }
         val inlineDeferreds = inlineUrls.mapIndexed { index, imgUrl ->
             async {
                 semaphore.withPermit {
-                    imageOptimizer.optimizeImage(imgUrl, index + 1, isCover = false)
+                    imageOptimizer.optimizeImage(
+                        imgUrl,
+                        index + 1,
+                        isCover = false,
+                        maxDimOverride = settings.imageMaxDim,
+                        jpegQualityOverride = settings.imageJpegQuality
+                    )
                 }
             }
         }
         val coverImage = coverDeferred?.await()
         val inlineImages = inlineDeferreds.awaitAll().filterNotNull()
         coverImage to inlineImages
-    }
-
-    private fun redactUrlForLog(rawUrl: String): String {
-        val parsed = rawUrl.toUri()
-        val scheme = parsed.scheme
-        val host = parsed.host
-        return if (!scheme.isNullOrBlank() && !host.isNullOrBlank()) {
-            "$scheme://$host"
-        } else {
-            "(redacted-url)"
-        }
     }
 
     fun ensureInsideDirectory(file: File, dir: File): File {

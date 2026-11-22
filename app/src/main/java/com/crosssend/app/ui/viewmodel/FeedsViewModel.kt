@@ -399,12 +399,7 @@ class FeedsViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                app.database.openHelper.writableDatabase.delete(
-                    "feed_articles",
-                    "id = ?",
-                    arrayOf(article.id.toString())
-                )
-                app.database.invalidationTracker.refreshAsync()
+                feedDao.deleteArticleById(article.id)
             }
         }
     }

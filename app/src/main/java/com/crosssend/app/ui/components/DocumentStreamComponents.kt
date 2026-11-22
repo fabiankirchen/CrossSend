@@ -186,7 +186,8 @@ fun DocumentGridOrList(
     modifier: Modifier = Modifier,
     uploadProgressMap: Map<Long, Float> = emptyMap(),
     gridContentPadding: PaddingValues = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
-    listContentPadding: PaddingValues = PaddingValues(vertical = 4.dp)
+    listContentPadding: PaddingValues = PaddingValues(vertical = 4.dp),
+    onRetryDocument: ((DocumentEntity) -> Unit)? = null
 ) {
     if (isGridView) {
         LazyVerticalGrid(
@@ -207,7 +208,8 @@ fun DocumentGridOrList(
                     uploadProgress = uploadProgressMap[doc.id],
                     onClick = { onDocumentClick(doc) },
                     onLongClick = { onDocumentLongClick(doc) },
-                    onDelete = onDeleteDocument
+                    onDelete = onDeleteDocument,
+                    onRetry = onRetryDocument
                 )
             }
         }
@@ -229,7 +231,8 @@ fun DocumentGridOrList(
                     uploadProgress = uploadProgressMap[doc.id],
                     onClick = { onDocumentClick(doc) },
                     onLongClick = { onDocumentLongClick(doc) },
-                    onDelete = onDeleteDocument
+                    onDelete = onDeleteDocument,
+                    onRetry = onRetryDocument
                 )
             }
         }

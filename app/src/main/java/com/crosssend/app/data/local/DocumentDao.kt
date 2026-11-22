@@ -58,6 +58,9 @@ interface DocumentDao {
     @Query("SELECT COUNT(*) FROM documents WHERE type != 'SLEEP' AND syncStatus IN ('PENDING_UPLOAD', 'FAILED')")
     fun getPendingUploadCountFlow(): Flow<Int>
 
+    @Query("SELECT COUNT(*) FROM documents WHERE type != 'SLEEP' AND syncStatus = 'FAILED'")
+    fun getFailedCountFlow(): Flow<Int>
+
     @Query("SELECT COUNT(*) FROM documents WHERE type = :type AND syncStatus IN ('PENDING_UPLOAD', 'FAILED')")
     fun getUnsyncedCountByTypeFlow(type: DocumentType): Flow<Int>
 

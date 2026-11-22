@@ -1,7 +1,6 @@
 package com.crosssend.app.sync
 
 import android.content.Context
-import android.util.Log
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -12,6 +11,7 @@ import androidx.work.WorkerParameters
 import com.crosssend.app.CrossSendApp
 import com.crosssend.app.data.local.FeedArticleEntity
 import com.crosssend.app.data.local.FeedEntity
+import com.crosssend.app.util.SafeLogger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -30,13 +30,15 @@ class RssSyncWorker(
             syncAllFeeds(CrossSendApp.instance)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            Log.e(TAG, "RSS background sync worker encountered an error", e)
+            SafeLogger.e(TAG, "RSS background sync worker encountered an error", e)
         }
         return Result.success()
     }
 
     companion object {
         private const val TAG = "RssSyncWorker"
+        private const val PREFS_NAME = "crosssend_prefs"
+        private const val KEY_DISABLED_AUTO_SYNC_IDS = "feeds_disabled_auto_sync_ids"
 
         suspend fun syncFeed(app: CrossSendApp, feed: FeedEntity) {
             val parsedFeed = app.rssFeedParser.fetchFeed(feed.url)
@@ -47,7 +49,14 @@ class RssSyncWorker(
         }
 
         suspend fun syncAllFeeds(app: CrossSendApp) {
+            val prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val disabledIds = prefs.getStringSet(KEY_DISABLED_AUTO_SYNC_IDS, emptySet())
+                .orEmpty()
+                .mapNotNull { it.toLongOrNull() }
+                .toSet()
+
             val feeds = app.database.feedDao().getAllFeedsList()
+                .filterNot { it.id in disabledIds }
             val semaphore = Semaphore(3)
             coroutineScope {
                 feeds.map { feed ->
@@ -57,7 +66,7 @@ class RssSyncWorker(
                                 syncFeed(app, feed)
                             } catch (e: Exception) {
                                 if (e is CancellationException) throw e
-                                Log.e(TAG, "Failed to sync feed ${feed.title} (${feed.url})", e)
+                                SafeLogger.e(TAG, "Failed to sync feed (${SafeLogger.redactUrl(feed.url)})", e)
                             }
                         }
                     }

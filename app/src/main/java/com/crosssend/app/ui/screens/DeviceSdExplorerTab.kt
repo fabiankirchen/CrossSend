@@ -9,7 +9,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
-import android.util.Log
+import com.crosssend.app.util.SafeLogger
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -112,8 +112,12 @@ internal suspend fun uploadUriToSdCard(
         }
         uploadFileName = uploadFileName.substringAfterLast('/').substringAfterLast('\\').replace("..", "_")
         val safeFileName = File(uploadFileName).name.ifBlank { "upload_${System.currentTimeMillis()}.bin" }
+        val uploadExt = safeFileName.substringAfterLast('.', "bin").takeIf { it.isNotBlank() } ?: "bin"
 
-        val tempFile = ensureInsideDirectory(context.cacheDir, File(context.cacheDir, safeFileName))
+        val tempFile = ensureInsideDirectory(
+            context.cacheDir,
+            File.createTempFile("sd_upload_", ".$uploadExt", context.cacheDir)
+        )
         val success = try {
             withContext(Dispatchers.IO) {
                 val inputStream = context.contentResolver.openInputStream(uri)
@@ -156,8 +160,12 @@ internal suspend fun downloadItemFromSdCard(
         return SdDownloadOutcome.Error("Invalid SD card path")
     }
     val safeName = File(item.name).name.ifBlank { "download.bin" }
+    val downloadExt = safeName.substringAfterLast('.', "bin").takeIf { it.isNotBlank() } ?: "bin"
     return try {
-        val tempFile = ensureInsideDirectory(context.cacheDir, File(context.cacheDir, safeName))
+        val tempFile = ensureInsideDirectory(
+            context.cacheDir,
+            File.createTempFile("sd_transfer_", ".$downloadExt", context.cacheDir)
+        )
         try {
             val success = withContext(Dispatchers.IO) {
                 app.webDavClient.downloadFile(item.path, tempFile)
@@ -642,7 +650,7 @@ internal fun saveToPublicDownloads(context: Context, fileName: String, file: Fil
             true
         }
     } catch (e: Exception) {
-        Log.e(TAG, "Failed to save downloaded file to public Downloads", e)
+        SafeLogger.e(TAG, "Failed to save downloaded file to public Downloads", e)
         false
     }
 }

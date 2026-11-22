@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -40,7 +41,9 @@ import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.SyncDisabled
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -354,7 +357,8 @@ fun FeedsScreen(
                 onSelectFeed = viewModel::selectFeed,
                 onDismiss = { showSourcesSheet = false },
                 onOpenAddFeedDialog = { showAddFeedDialog = true },
-                onDeleteFeed = { feed -> feedToDelete = feed }
+                onDeleteFeed = { feed -> feedToDelete = feed },
+                onToggleAutoSync = viewModel::toggleAutoSync
             )
         }
 
@@ -496,7 +500,8 @@ fun FeedsSourcesSheet(
     onOpenAddFeedDialog: () -> Unit,
     onDeleteFeed: (FeedEntity) -> Unit,
     modifier: Modifier = Modifier,
-    disabledAutoSyncFeedIds: Set<Long> = emptySet()
+    disabledAutoSyncFeedIds: Set<Long> = emptySet(),
+    onToggleAutoSync: (FeedEntity) -> Unit = {}
 ) {
     val cachedCountByFeed = remember(allCachedArticles) {
         allCachedArticles.groupingBy { it.feedId }.eachCount()
@@ -516,7 +521,8 @@ fun FeedsSourcesSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 32.dp)
+                .padding(bottom = 24.dp)
+                .navigationBarsPadding()
         ) {
             Row(
                 modifier = Modifier
@@ -751,6 +757,25 @@ fun FeedsSourcesSheet(
                                     modifier = Modifier
                                         .padding(end = 4.dp)
                                         .size(20.dp)
+                                )
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    onToggleAutoSync(feed)
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = if (isAutoSyncDisabled) Icons.Outlined.SyncDisabled else Icons.Default.Sync,
+                                    contentDescription = stringResource(
+                                        if (isAutoSyncDisabled) R.string.feeds_cd_auto_sync_off else R.string.feeds_cd_auto_sync_on
+                                    ),
+                                    tint = if (isAutoSyncDisabled) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
 

@@ -14,8 +14,10 @@ import com.crosssend.app.converter.EInkImageOptimizer
 import com.crosssend.app.data.local.DocumentEntity
 import com.crosssend.app.data.model.DocumentType
 import com.crosssend.app.data.model.RenderMode
+import com.crosssend.app.data.model.SyncResult
 import com.crosssend.app.data.model.SyncStatus
 import com.crosssend.app.network.WifiConnectionState
+import com.crosssend.app.sync.SyncUploadWorker
 import com.crosssend.app.util.DateUtils
 import com.crosssend.app.util.DocumentPreviewReader
 import com.crosssend.app.util.EpubCoverLoader
@@ -67,6 +69,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uploadProgressByDocId: StateFlow<Map<Long, Float>> = app.syncManager.uploadProgressByDocId
 
     val unsentCount: StateFlow<Int> = documentDao.getPendingUploadCountFlow()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), 0)
+
+    val failedCount: StateFlow<Int> = documentDao.getFailedCountFlow()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), 0)
 
     private val _searchQuery = MutableStateFlow("")
@@ -294,7 +299,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun triggerSync() {
         app.applicationScope.launch {
-            app.syncManager.performSync()
+            when (val result = app.syncManager.performSync()) {
+                is SyncResult.Success -> {
+                    if (result.uploadedCount > 0 || result.deletedCount > 0) {
+                        _uiEvents.emit(UiMessage.Resource(R.string.sync_status_completed))
+                    }
+                }
+                is SyncResult.Queued -> {
+                    _uiEvents.emit(UiMessage.Resource(R.string.main_sync_queued))
+                }
+                is SyncResult.Error -> {
+                    val msg = result.message.trim()
+                    if (msg.isNotEmpty()) {
+                        _uiEvents.emit(UiMessage.Text(msg))
+                    } else {
+                        _uiEvents.emit(UiMessage.Resource(R.string.sync_error_unknown))
+                    }
+                }
+            }
+        }
+    }
+
+    fun retryDocument(doc: DocumentEntity) {
+        app.applicationScope.launch {
+            documentDao.updateSyncStatus(doc.id, SyncStatus.PENDING_UPLOAD, null)
+            _uiEvents.emit(UiMessage.Resource(R.string.main_retry_queued))
+            if (app.wifiManager.isConnected() || app.webDavClient.isReachable()) {
+                when (val result = app.syncManager.performSync()) {
+                    is SyncResult.Error -> {
+                        val msg = result.message.trim()
+                        if (msg.isNotEmpty()) {
+                            _uiEvents.emit(UiMessage.Text(msg))
+                        }
+                    }
+                    else -> Unit
+                }
+            } else {
+                SyncUploadWorker.enqueue(app)
+            }
         }
     }
 

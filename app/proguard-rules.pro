@@ -22,10 +22,9 @@
 }
 -dontwarn androidx.room.paging.**
 
-# Jsoup & Readability4J
+# Jsoup
 -keeppackagenames org.jsoup.nodes
 -dontwarn org.jsoup.**
--dontwarn net.dankito.readability4j.**
 
 # PdfBox-Android & BouncyCastle
 -keep class com.tom_roush.** { *; }

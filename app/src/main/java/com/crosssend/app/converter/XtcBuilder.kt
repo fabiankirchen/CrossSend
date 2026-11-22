@@ -67,20 +67,79 @@ object XtcBuilder {
         }
     }
 
-    fun writeXtch(
-        output: OutputStream,
+    /**
+     * Streams XTH page blobs directly from [pageBlobFile] into [outputFile] using [pageSizes],
+     * keeping peak heap usage bounded to a 32 KB copy buffer regardless of page count.
+     */
+    fun buildXtchFromPageFile(
+        outputFile: File,
         title: String,
         author: String?,
-        xthPages: List<ByteArray>,
+        pageBlobFile: File,
+        pageSizes: List<Int>,
         width: Int,
         height: Int,
         publisher: String = "CrossSend",
-        language: String = "en-US",
+        language: String = Locale.getDefault().toLanguageTag().ifBlank { "en-US" },
         createTimeSec: Long = System.currentTimeMillis() / 1000L
     ): Boolean {
-        if (xthPages.isEmpty() || width <= 0 || height <= 0) return false
-        val pageCount = xthPages.size.coerceAtMost(0xFFFF)
+        if (pageSizes.isEmpty() || !pageBlobFile.exists() || width <= 0 || height <= 0) return false
+        val pageCount = pageSizes.size.coerceAtMost(0xFFFF)
+        val expectedDataBytes = pageSizes.take(pageCount).sumOf { it.toLong() }
+        if (expectedDataBytes <= 0L || pageBlobFile.length() < expectedDataBytes) return false
 
+        outputFile.parentFile?.mkdirs()
+        return FileOutputStream(outputFile).use { fos ->
+            BufferedOutputStream(fos, 32 * 1024).use { bos ->
+                val dataOffset = writeXtchHeaderAndMetadata(
+                    output = bos,
+                    title = title,
+                    author = author,
+                    publisher = publisher,
+                    language = language,
+                    pageCount = pageCount,
+                    createTimeSec = createTimeSec
+                )
+
+                var runningOffset = dataOffset
+                val indexEntryBuf = ByteBuffer.allocate(PAGE_INDEX_ENTRY_SIZE).order(ByteOrder.LITTLE_ENDIAN)
+                for (i in 0 until pageCount) {
+                    val sz = pageSizes[i]
+                    indexEntryBuf.clear()
+                    indexEntryBuf.putLong(runningOffset)
+                    indexEntryBuf.putInt(sz)
+                    indexEntryBuf.putShort(width.toShort())
+                    indexEntryBuf.putShort(height.toShort())
+                    bos.write(indexEntryBuf.array())
+                    runningOffset += sz.toLong()
+                }
+
+                pageBlobFile.inputStream().use { input ->
+                    val buffer = ByteArray(32 * 1024)
+                    var remaining = expectedDataBytes
+                    while (remaining > 0L) {
+                        val toRead = minOf(buffer.size.toLong(), remaining).toInt()
+                        val read = input.read(buffer, 0, toRead)
+                        if (read <= 0) return false
+                        bos.write(buffer, 0, read)
+                        remaining -= read.toLong()
+                    }
+                }
+                bos.flush()
+                true
+            }
+        }
+    }
+
+    private fun writeXtchHeaderAndMetadata(
+        output: OutputStream,
+        title: String,
+        author: String?,
+        publisher: String,
+        language: String,
+        pageCount: Int,
+        createTimeSec: Long
+    ): Long {
         val metadataOffset = HEADER_SIZE.toLong()
         val indexOffset = metadataOffset + METADATA_SIZE
         val dataOffset = indexOffset + pageCount.toLong() * PAGE_INDEX_ENTRY_SIZE
@@ -115,6 +174,32 @@ object XtcBuilder {
         metaBuf.putShort(0) // chapterCount
         metaBuf.put(ByteArray(8)) // reserved
         output.write(metaBuf.array())
+
+        return dataOffset
+    }
+
+    fun writeXtch(
+        output: OutputStream,
+        title: String,
+        author: String?,
+        xthPages: List<ByteArray>,
+        width: Int,
+        height: Int,
+        publisher: String = "CrossSend",
+        language: String = "en-US",
+        createTimeSec: Long = System.currentTimeMillis() / 1000L
+    ): Boolean {
+        if (xthPages.isEmpty() || width <= 0 || height <= 0) return false
+        val pageCount = xthPages.size.coerceAtMost(0xFFFF)
+        val dataOffset = writeXtchHeaderAndMetadata(
+            output = output,
+            title = title,
+            author = author,
+            publisher = publisher,
+            language = language,
+            pageCount = pageCount,
+            createTimeSec = createTimeSec
+        )
 
         // 3. Write Page Index Table
         var runningOffset = dataOffset
@@ -616,10 +701,26 @@ object XtcBuilder {
 
     private fun fixedUtf8Bytes(text: String, maxBytes: Int): ByteArray {
         val out = ByteArray(maxBytes)
-        val raw = text.toByteArray(Charsets.UTF_8)
-        val copyLen = minOf(raw.size, maxBytes - 1) // keep trailing null terminator
-        if (copyLen > 0) {
-            System.arraycopy(raw, 0, out, 0, copyLen)
+        if (maxBytes <= 1 || text.isEmpty()) return out
+        val maxContentBytes = maxBytes - 1 // keep trailing null terminator
+        var byteCount = 0
+        var charIndex = 0
+        while (charIndex < text.length) {
+            val cp = text.codePointAt(charIndex)
+            val charCount = Character.charCount(cp)
+            val cpBytes = when {
+                cp <= 0x7F -> 1
+                cp <= 0x7FF -> 2
+                cp <= 0xFFFF -> 3
+                else -> 4
+            }
+            if (byteCount + cpBytes > maxContentBytes) break
+            byteCount += cpBytes
+            charIndex += charCount
+        }
+        if (charIndex > 0) {
+            val truncated = text.substring(0, charIndex).toByteArray(Charsets.UTF_8)
+            System.arraycopy(truncated, 0, out, 0, minOf(truncated.size, maxContentBytes))
         }
         return out
     }

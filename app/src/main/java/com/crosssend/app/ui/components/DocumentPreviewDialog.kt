@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -122,7 +123,8 @@ fun DocumentPreviewDialog(
     onDismiss: () -> Unit,
     onDelete: (DocumentEntity) -> Unit,
     modifier: Modifier = Modifier,
-    onResendFromArchive: ((DocumentEntity) -> Unit)? = null
+    onResendFromArchive: ((DocumentEntity) -> Unit)? = null,
+    onRetry: ((DocumentEntity) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val resources = LocalResources.current
@@ -189,7 +191,8 @@ fun DocumentPreviewDialog(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 32.dp)
+                .padding(bottom = 24.dp)
+                .navigationBarsPadding()
         ) {
             // Header Row: Type icon + Title on Left, Action buttons on Right
             Row(
@@ -443,6 +446,65 @@ fun DocumentPreviewDialog(
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
+
+                if (liveDocument.syncStatus == SyncStatus.FAILED) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Error,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = stringResource(R.string.preview_sync_error_title),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                val errorDetail = liveDocument.syncError?.takeIf { it.isNotBlank() }
+                                if (errorDetail != null) {
+                                    Text(
+                                        text = errorDetail,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            if (onRetry != null) {
+                                FilledTonalButton(
+                                    onClick = { onRetry(liveDocument) },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = stringResource(R.string.main_action_retry),
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+                }
 
                 // Render Mode Selector (Reading View EPUB vs Original Layout XTCH)
                 val safeSourceUrl = liveDocument.sourceUrl?.trim()?.let { raw ->

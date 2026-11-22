@@ -6,10 +6,11 @@ import android.graphics.Canvas
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
-import android.util.Log
 import androidx.core.graphics.createBitmap
 import com.crosssend.app.R
+import com.crosssend.app.util.SafeLogger
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.text.PDFTextStripper
@@ -33,9 +34,7 @@ class PdfExtractor(private val context: Context) {
     private val tag = "PdfExtractor"
 
     suspend fun extractFromUri(uri: Uri, defaultTitle: String): ExtractedPdf = withContext(Dispatchers.IO) {
-        if (!PDFBoxResourceLoader.isReady()) {
-            PDFBoxResourceLoader.init(context)
-        }
+        ensureInitialized(context)
         val inputStream = context.contentResolver.openInputStream(uri)
             ?: throw IllegalArgumentException(context.getString(R.string.proc_error_pdf_open))
         inputStream.use { stream ->
@@ -44,13 +43,11 @@ class PdfExtractor(private val context: Context) {
     }
 
     suspend fun extractFromFile(file: File, defaultTitle: String): ExtractedPdf = withContext(Dispatchers.IO) {
-        if (!PDFBoxResourceLoader.isReady()) {
-            PDFBoxResourceLoader.init(context)
-        }
+        ensureInitialized(context)
         if (file.length() > MAX_PDF_STREAM_BYTES) {
             throw IllegalArgumentException(context.getString(R.string.proc_error_file_too_large))
         }
-        PDDocument.load(file).use { doc ->
+        PDDocument.load(file, MemoryUsageSetting.setupTempFileOnly()).use { doc ->
             extractFromDocument(doc, defaultTitle)
         }
     }
@@ -100,7 +97,7 @@ class PdfExtractor(private val context: Context) {
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             return bitmap
         } catch (e: Exception) {
-            Log.w(tag, "Could not render first page of PDF: ${e.localizedMessage}")
+            SafeLogger.w(tag, "Could not render first page of PDF", e)
             return null
         } finally {
             try { page?.close() } catch (_: Exception) {}
@@ -134,7 +131,7 @@ class PdfExtractor(private val context: Context) {
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             return bitmap
         } catch (e: Exception) {
-            Log.w(tag, "Could not render first page of PDF file: ${e.localizedMessage}")
+            SafeLogger.w(tag, "Could not render first page of PDF file", e)
             return null
         } finally {
             try { page?.close() } catch (_: Exception) {}
@@ -152,7 +149,7 @@ class PdfExtractor(private val context: Context) {
             if (copied < 0L) {
                 throw IllegalArgumentException(context.getString(R.string.proc_error_file_too_large))
             }
-            return PDDocument.load(tempFile).use { doc ->
+            return PDDocument.load(tempFile, MemoryUsageSetting.setupTempFileOnly()).use { doc ->
                 extractFromDocument(doc, fallbackTitle)
             }
         } finally {
@@ -247,7 +244,7 @@ class PdfExtractor(private val context: Context) {
 
             val readingTimeMinutes = maxOf(1, (totalWordCount / 210.0).roundToInt())
 
-            Log.i(tag, "Successfully extracted $totalWordCount words across $pageCount pages")
+            SafeLogger.d(tag, "Successfully extracted $totalWordCount words across $pageCount pages")
 
             return ExtractedPdf(
                 title = detectedTitle,
@@ -261,6 +258,17 @@ class PdfExtractor(private val context: Context) {
 
     companion object {
         private const val MAX_PDF_STREAM_BYTES = 150L * 1024L * 1024L
+        private val initLock = Any()
+
+        @JvmStatic
+        fun ensureInitialized(context: Context) {
+            if (PDFBoxResourceLoader.isReady()) return
+            synchronized(initLock) {
+                if (!PDFBoxResourceLoader.isReady()) {
+                    PDFBoxResourceLoader.init(context.applicationContext ?: context)
+                }
+            }
+        }
     }
 
     private data class RawPdfLine(

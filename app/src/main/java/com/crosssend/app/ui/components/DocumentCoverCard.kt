@@ -5,6 +5,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material3.Card
@@ -71,7 +73,8 @@ fun DocumentCoverCard(
     onLongClick: (() -> Unit)? = null,
     isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
-    uploadProgress: Float? = null
+    uploadProgress: Float? = null,
+    onRetry: ((DocumentEntity) -> Unit)? = null
 ) {
     val context = LocalContext.current
     var coverBitmap by remember(document.id, document.localPath, document.fileSizeBytes, document.renderMode) { mutableStateOf<Bitmap?>(null) }
@@ -175,9 +178,17 @@ fun DocumentCoverCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Top-Start: Sync Status pill
+                val canRetryPill = document.syncStatus == SyncStatus.FAILED && onRetry != null && !isSelectionMode
                 Surface(
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.88f)
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.88f),
+                    modifier = if (canRetryPill) {
+                        Modifier
+                            .clip(CircleShape)
+                            .clickable { onRetry?.invoke(document) }
+                    } else {
+                        Modifier
+                    }
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -221,8 +232,8 @@ fun DocumentCoverCard(
                             }
                             SyncStatus.FAILED -> {
                                 Icon(
-                                    imageVector = Icons.Default.Error,
-                                    contentDescription = null,
+                                    imageVector = if (canRetryPill) Icons.Default.Refresh else Icons.Default.Error,
+                                    contentDescription = if (canRetryPill) stringResource(R.string.main_action_retry) else null,
                                     modifier = Modifier.size(12.dp),
                                     tint = MaterialTheme.colorScheme.error
                                 )
@@ -310,6 +321,16 @@ fun DocumentCoverCard(
                         text = document.author,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (document.syncStatus == SyncStatus.FAILED && !document.syncError.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = document.syncError,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )

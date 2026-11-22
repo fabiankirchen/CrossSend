@@ -6,13 +6,15 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import android.os.PatternMatcher
-import android.util.Log
 import androidx.core.content.edit
 import com.crosssend.app.CrossSendApp
+import com.crosssend.app.util.SafeLogger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +38,7 @@ import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
+import java.net.UnknownHostException
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -189,6 +192,15 @@ class CrossPointWifiManager(
     private val _connectionState = MutableStateFlow<WifiConnectionState>(WifiConnectionState.Disconnected)
     val connectionState: StateFlow<WifiConnectionState> = _connectionState.asStateFlow()
 
+    @Volatile
+    var onDeviceConnected: (() -> Unit)? = null
+
+    private fun notifyConnectedTransition(wasAlreadyConnected: Boolean) {
+        if (!wasAlreadyConnected) {
+            onDeviceConnected?.invoke()
+        }
+    }
+
     init {
         try {
             val internetRequest = NetworkRequest.Builder()
@@ -197,20 +209,21 @@ class CrossPointWifiManager(
                 .build()
             connectivityManager.registerNetworkCallback(internetRequest, internetMonitorCallback)
         } catch (e: SecurityException) {
-            Log.w(tag, "Unable to register internet monitor callback: ${e.message}")
+            SafeLogger.w(tag, "Unable to register internet monitor callback", e)
         } catch (e: Exception) {
-            Log.w(tag, "Internet monitor registration error: ${e.message}")
+            SafeLogger.w(tag, "Internet monitor registration error", e)
         }
 
         try {
             val wifiRequest = NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .build()
             connectivityManager.registerNetworkCallback(wifiRequest, lanMonitorCallback)
         } catch (e: SecurityException) {
-            Log.w(tag, "Unable to register LAN Wi-Fi monitor callback: ${e.message}")
+            SafeLogger.w(tag, "Unable to register LAN Wi-Fi monitor callback", e)
         } catch (e: Exception) {
-            Log.w(tag, "LAN Wi-Fi monitor registration error: ${e.message}")
+            SafeLogger.w(tag, "LAN Wi-Fi monitor registration error", e)
         }
     }
 
@@ -250,7 +263,7 @@ class CrossPointWifiManager(
         }
         val normalized = LocalDeviceHostValidator.normalizeLocalDeviceUrl(url)
         if (normalized == null) {
-            Log.w(tag, "Rejected invalid or non-local LAN base URL")
+            SafeLogger.w(tag, "Rejected invalid or non-local LAN base URL")
             return false
         }
         context.getSharedPreferences("crosspoint_prefs", Context.MODE_PRIVATE)
@@ -302,7 +315,7 @@ class CrossPointWifiManager(
         }
         val effectiveSsid = candidatePrefix.trim().ifBlank { "Cross" }
         _connectionState.value = WifiConnectionState.ConnectingToAp
-        Log.d(tag, "Requesting connection to CrossPoint AP Wi-Fi network")
+        SafeLogger.d(tag, "Requesting connection to CrossPoint AP Wi-Fi network")
 
         try {
             val specifier = WifiNetworkSpecifier.Builder()
@@ -319,7 +332,7 @@ class CrossPointWifiManager(
             val callback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     super.onAvailable(network)
-                    Log.d(tag, "Connected to CrossPoint AP! Network: $network")
+                    SafeLogger.d(tag, "Connected to CrossPoint AP")
                     boundNetwork = network
 
                     // Explicitly unbind process so mobile data/WAN stays available for external internet
@@ -328,20 +341,23 @@ class CrossPointWifiManager(
                     try {
                         connectivityManager.bindProcessToNetwork(null)
                     } catch (e: Exception) {
-                        Log.w(tag, "bindProcessToNetwork(null) notice: ${e.message}")
+                        SafeLogger.w(tag, "bindProcessToNetwork(null) notice", e)
                     }
 
+                    val gatewayIp = resolveHotspotGatewayIp(network, defaultIp)
                     try {
-                        CrossSendApp.instance.webDavClient.updateBaseUrl("http://$defaultIp")
+                        CrossSendApp.instance.webDavClient.updateBaseUrl("http://$gatewayIp")
                     } catch (_: Exception) {}
 
-                    _connectionState.value = WifiConnectionState.ConnectedToCrossPointAp(defaultIp)
+                    val wasConnected = isConnected()
+                    _connectionState.value = WifiConnectionState.ConnectedToCrossPointAp(gatewayIp)
                     startReachabilityWatchdog()
+                    notifyConnectedTransition(wasConnected)
                 }
 
                 override fun onLost(network: Network) {
                     super.onLost(network)
-                    Log.d(tag, "CrossPoint AP network lost.")
+                    SafeLogger.d(tag, "CrossPoint AP network lost.")
                     stopReachabilityWatchdog()
                     unbindProcess()
                     _connectionState.value = WifiConnectionState.Disconnected
@@ -349,7 +365,7 @@ class CrossPointWifiManager(
 
                 override fun onUnavailable() {
                     super.onUnavailable()
-                    Log.w(tag, "CrossPoint AP connection was cancelled or unavailable.")
+                    SafeLogger.w(tag, "CrossPoint AP connection was cancelled or unavailable.")
                     stopReachabilityWatchdog()
                     unbindProcess()
                     _connectionState.value = WifiConnectionState.Disconnected
@@ -360,7 +376,7 @@ class CrossPointWifiManager(
             connectivityManager.requestNetwork(request, callback, 15_000)
 
         } catch (e: Exception) {
-            Log.e(tag, "Failed to request CrossPoint AP network", e)
+            SafeLogger.e(tag, "Failed to request CrossPoint AP network", e)
             stopReachabilityWatchdog()
             _connectionState.value = WifiConnectionState.Error(e.message ?: context.getString(com.crosssend.app.R.string.wifi_error_connection))
         }
@@ -382,7 +398,7 @@ class CrossPointWifiManager(
             try {
                 connectivityManager.unregisterNetworkCallback(callback)
             } catch (e: Exception) {
-                Log.w(tag, "Error unregistering network callback: ${e.message}")
+                SafeLogger.w(tag, "Error unregistering network callback", e)
             }
             activeCallback = null
         }
@@ -563,19 +579,43 @@ class CrossPointWifiManager(
      * If not on the hotspot subnet (192.168.4.1), also preserves the LAN URL.
      */
     fun setConnectedOnLan(ipOrHost: String) {
-        if (!ipOrHost.contains("192.168.4.1")) {
+        val wasConnected = isConnected()
+        if (!ipOrHost.contains("192.168.4.")) {
             setLanBaseUrl(ipOrHost)
         }
         _connectionState.value = WifiConnectionState.ConnectedOnLocalNetwork(ipOrHost)
         startReachabilityWatchdog()
+        notifyConnectedTransition(wasConnected)
     }
 
     private fun setConnectedToHotspot(ip: String = "192.168.4.1") {
+        val wasConnected = isConnected()
         if (boundNetwork == null) {
             boundNetwork = resolveActiveWifiNetwork()
         }
-        _connectionState.value = WifiConnectionState.ConnectedToCrossPointAp(ip)
+        val resolvedIp = if (ip == "192.168.4.1") {
+            resolveHotspotGatewayIp(boundNetwork, ip)
+        } else {
+            ip
+        }
+        _connectionState.value = WifiConnectionState.ConnectedToCrossPointAp(resolvedIp)
         startReachabilityWatchdog()
+        notifyConnectedTransition(wasConnected)
+    }
+
+    private fun resolveHotspotGatewayIp(network: Network?, fallback: String = "192.168.4.1"): String {
+        return try {
+            val linkProps = network?.let { connectivityManager.getLinkProperties(it) }
+            val gatewayAddr = linkProps?.routes
+                ?.firstOrNull { it.isDefaultRoute && it.gateway is Inet4Address }
+                ?.gateway
+            val gatewayIp = gatewayAddr?.hostAddress?.takeIf {
+                LocalDeviceHostValidator.isAllowedLocalAddress(gatewayAddr)
+            }
+            gatewayIp ?: fallback
+        } catch (_: Exception) {
+            fallback
+        }
     }
 
     private fun startReachabilityWatchdog() {
@@ -614,9 +654,9 @@ class CrossPointWifiManager(
                         consecutiveFailures = 0
                     } else {
                         consecutiveFailures++
-                        Log.d(tag, "Watchdog probe failed ($consecutiveFailures/$WATCHDOG_MAX_FAILURES) for $targetUrl")
+                        SafeLogger.d(tag, "Watchdog probe failed ($consecutiveFailures/$WATCHDOG_MAX_FAILURES) for ${SafeLogger.redactUrl(targetUrl)}")
                         if (consecutiveFailures >= WATCHDOG_MAX_FAILURES) {
-                            Log.w(tag, "Watchdog lost reachability to $targetUrl; transitioning to Disconnected")
+                            SafeLogger.w(tag, "Watchdog lost reachability to ${SafeLogger.redactUrl(targetUrl)}; transitioning to Disconnected")
                             transitionToDisconnected(state)
                             break
                         }
@@ -658,7 +698,7 @@ class CrossPointWifiManager(
             return
         }
 
-        Log.d(tag, "Wi-Fi transport lost; transitioning ConnectedOnLocalNetwork -> Disconnected")
+        SafeLogger.d(tag, "Wi-Fi transport lost; transitioning ConnectedOnLocalNetwork -> Disconnected")
         stopReachabilityWatchdog()
         _connectionState.value = WifiConnectionState.Disconnected
     }
@@ -714,7 +754,7 @@ class CrossPointWifiManager(
                     lastSuccessfulContactMs = System.currentTimeMillis()
                 } else if (!isTransferInProgress() && System.currentTimeMillis() - lastSuccessfulContactMs >= UNREACHABLE_GRACE_MS) {
                     val staleMs = System.currentTimeMillis() - lastSuccessfulContactMs
-                    Log.w(tag, "Device unreachable at $targetUrl (stale ${staleMs}ms); transitioning to Disconnected")
+                    SafeLogger.w(tag, "Device unreachable at ${SafeLogger.redactUrl(targetUrl)} (stale ${staleMs}ms); transitioning to Disconnected")
                     transitionToDisconnected(current)
                 }
             } finally {
@@ -753,7 +793,7 @@ class CrossPointWifiManager(
                     lastSuccessfulContactMs = System.currentTimeMillis()
                     startReachabilityWatchdogIfIdle()
                 } else if (!isTransferInProgress()) {
-                    Log.d(tag, "On-resume probe failed for $targetUrl; transitioning to Disconnected")
+                    SafeLogger.d(tag, "On-resume probe failed for ${SafeLogger.redactUrl(targetUrl)}; transitioning to Disconnected")
                     transitionToDisconnected(current)
                 }
             }
@@ -820,11 +860,16 @@ class CrossPointWifiManager(
                         .socketFactory(apNetwork.socketFactory)
                         .dns(object : okhttp3.Dns {
                             override fun lookup(hostname: String): List<InetAddress> {
-                                return try {
+                                val resolved = try {
                                     apNetwork.getAllByName(hostname).toList()
                                 } catch (_: Exception) {
-                                    listOf(InetAddress.getByName(hostname))
+                                    InetAddress.getAllByName(hostname).toList()
                                 }
+                                val localOnly = resolved.filter { LocalDeviceHostValidator.isAllowedLocalAddress(it) }
+                                if (localOnly.isEmpty()) {
+                                    throw UnknownHostException("Blocked non-local device probe address for $hostname")
+                                }
+                                return localOnly
                             }
                         })
                         .build()
@@ -862,17 +907,7 @@ class CrossPointWifiManager(
     private fun probeStatusEndpoint(baseUrl: String, apNetwork: Network?, timeoutMs: Long): Boolean {
         val cleanBase = normalizeHttpUrl(baseUrl)
         if (cleanBase == "http://" || cleanBase == "https://") return false
-        return try {
-            val req = okhttp3.Request.Builder()
-                .url("$cleanBase/api/status")
-                .get()
-                .build()
-            getProbeClient(apNetwork, timeoutMs).newCall(req).execute().use { resp ->
-                resp.isSuccessful
-            }
-        } catch (_: Exception) {
-            false
-        }
+        return probeValidStatusJson(cleanBase, getProbeClient(apNetwork, timeoutMs))
     }
 
     private fun isPhoneOnHotspotSubnet(): Boolean = try {
@@ -895,7 +930,7 @@ class CrossPointWifiManager(
         candidateIps: List<String> = emptyList()
     ): String? = withContext(Dispatchers.IO) {
         if (!hasLocalNetworkPermission()) {
-            Log.w(tag, "Local network permission not granted on API 37+; skipping LAN discovery.")
+            SafeLogger.w(tag, "Local network permission not granted on API 37+; skipping LAN discovery.")
             return@withContext null
         }
 
@@ -919,12 +954,13 @@ class CrossPointWifiManager(
             .filter { !it.contains("192.168.4.1") }
             .toMutableList()
 
+        val hotspotGateway = resolveHotspotGatewayIp(getApNetwork() ?: resolveActiveWifiNetwork(), "192.168.4.1")
         if (isPhoneOnHotspotSubnet()) {
-            initialCandidates.add("http://192.168.4.1")
+            initialCandidates.add("http://$hotspotGateway")
         }
         val candidates = initialCandidates.distinct()
 
-        val detectedUrl = withTimeoutOrNull(1600L) {
+        val detectedUrl = withTimeoutOrNull(1800L) {
             coroutineScope {
                 val foundDeferred = CompletableDeferred<String>()
 
@@ -935,20 +971,27 @@ class CrossPointWifiManager(
                 val httpJobs = candidates.map { cand ->
                     async(Dispatchers.IO) {
                         try {
-                            val isApCandidate = cand.contains("192.168.4.1")
+                            val isApCandidate = cand.contains("192.168.4.")
                             val probeClient = if (isApCandidate) apProbeClient else lanProbeClient
-                            val url = if (cand.startsWith("http")) "$cand/api/status" else "http://$cand/api/status"
-                            val req = okhttp3.Request.Builder().url(url).get().build()
-                            probeClient.newCall(req).execute().use { resp ->
-                                if (resp.isSuccessful) {
-                                    val finalUrl = if (cand.startsWith("http")) cand else "http://$cand"
-                                    foundDeferred.complete(finalUrl)
-                                    return@async finalUrl
-                                }
+                            val finalUrl = if (cand.startsWith("http")) cand else "http://$cand"
+                            val safeLocalUrl = LocalDeviceHostValidator.normalizeLocalDeviceUrl(finalUrl)
+                            if (safeLocalUrl != null && probeValidStatusJson(safeLocalUrl, probeClient)) {
+                                foundDeferred.complete(safeLocalUrl)
+                                return@async safeLocalUrl
                             }
                         } catch (e: SecurityException) {
-                            Log.w(tag, "LAN HTTP probe blocked by SecurityException for $cand: ${e.message}")
+                            SafeLogger.w(tag, "LAN HTTP probe blocked by SecurityException for ${SafeLogger.redactUrl(cand)}", e)
                         } catch (_: Exception) {}
+                        null
+                    }
+                }
+
+                val nsdJob = async(Dispatchers.IO) {
+                    try {
+                        discoverViaNsd(lanProbeClient)?.also { resolved ->
+                            foundDeferred.complete(resolved)
+                        }
+                    } catch (_: Exception) {
                         null
                     }
                 }
@@ -994,7 +1037,7 @@ class CrossPointWifiManager(
                             socket.receive(recvPacket)
                             val packetAddress = recvPacket.address
                             if (packetAddress == null || !LocalDeviceHostValidator.isAllowedLocalAddress(packetAddress)) {
-                                Log.w(tag, "Ignored UDP discovery reply from non-local source address")
+                                SafeLogger.w(tag, "Ignored UDP discovery reply from non-local source address")
                                 return@async null
                             }
 
@@ -1029,7 +1072,7 @@ class CrossPointWifiManager(
                             }
                         }
                     } catch (e: SecurityException) {
-                        Log.w(tag, "UDP discovery blocked by SecurityException: ${e.message}")
+                        SafeLogger.w(tag, "UDP discovery blocked by SecurityException", e)
                     } catch (_: Exception) {
                     } finally {
                         try {
@@ -1041,7 +1084,7 @@ class CrossPointWifiManager(
                     null
                 }
 
-                val allDeferreds = httpJobs + udpJob
+                val allDeferreds = httpJobs + listOf(udpJob, nsdJob)
 
                 select<String?> {
                     foundDeferred.onAwait { found ->
@@ -1057,15 +1100,84 @@ class CrossPointWifiManager(
         }
 
         if (detectedUrl != null) {
-            if (detectedUrl.contains("192.168.4.1")) {
-                setConnectedToHotspot("192.168.4.1")
+            if (detectedUrl.contains("192.168.4.")) {
+                setConnectedToHotspot(detectedUrl.substringAfter("://").substringBefore('/'))
             } else {
                 setConnectedOnLan(detectedUrl)
             }
-            Log.d(tag, "Auto-detected CrossPoint/CrossPlay at $detectedUrl")
+            SafeLogger.d(tag, "Auto-detected reader at ${SafeLogger.redactUrl(detectedUrl)}")
         }
 
         detectedUrl
+    }
+
+    @Suppress("DEPRECATION")
+    private suspend fun discoverViaNsd(probeClient: okhttp3.OkHttpClient): String? {
+        val nsdManager = context.applicationContext.getSystemService(Context.NSD_SERVICE) as? NsdManager
+            ?: return null
+        val knownPrefixes = listOf(
+            "crosspoint", "crossplay", "crossink", "crossmux", "papyrix", "snapix", "inx",
+            "xteink", "picco", "pico", "boox", "eegoread", "murphy"
+        )
+        val resultDeferred = CompletableDeferred<String?>()
+        val resolving = AtomicBoolean(false)
+
+        val discoveryListener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(serviceType: String) {}
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                resultDeferred.complete(null)
+            }
+            override fun onDiscoveryStopped(serviceType: String) {}
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
+
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                val lowerName = serviceInfo.serviceName.lowercase(Locale.ROOT)
+                if (knownPrefixes.none { lowerName.contains(it) }) return
+                if (!resolving.compareAndSet(false, true)) return
+                try {
+                    nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                        override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
+                            resolving.set(false)
+                        }
+
+                        override fun onServiceResolved(resolvedInfo: NsdServiceInfo) {
+                            scope.launch {
+                                try {
+                                    val hostAddr = resolvedInfo.host
+                                    val rawHost = hostAddr?.hostAddress?.substringBefore('%')
+                                    if (hostAddr != null && rawHost != null && LocalDeviceHostValidator.isAllowedLocalAddress(hostAddr)) {
+                                        val formattedHost = if (rawHost.contains(':')) "[$rawHost]" else rawHost
+                                        val portSuffix = if (resolvedInfo.port in 1..65535 && resolvedInfo.port != 80) ":${resolvedInfo.port}" else ""
+                                        val candidateUrl = LocalDeviceHostValidator.normalizeLocalDeviceUrl("http://$formattedHost$portSuffix")
+                                        if (candidateUrl != null && probeValidStatusJson(candidateUrl, probeClient)) {
+                                            resultDeferred.complete(candidateUrl)
+                                            return@launch
+                                        }
+                                    }
+                                } catch (_: Exception) {
+                                } finally {
+                                    resolving.set(false)
+                                }
+                            }
+                        }
+                    })
+                } catch (_: Exception) {
+                    resolving.set(false)
+                }
+            }
+        }
+
+        return try {
+            nsdManager.discoverServices("_http._tcp.", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+            withTimeoutOrNull(1400L) { resultDeferred.await() }
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                nsdManager.stopServiceDiscovery(discoveryListener)
+            } catch (_: Exception) {}
+        }
     }
 
     suspend fun connectOrDiscover(webDavClient: WebDavClient): Boolean {
@@ -1077,7 +1189,7 @@ class CrossPointWifiManager(
         }
 
         if (!hasLocalNetworkPermission()) {
-            Log.w(tag, "Local network permission not granted on API 37+; aborting connectOrDiscover.")
+            SafeLogger.w(tag, "Local network permission not granted on API 37+; aborting connectOrDiscover.")
             _connectionState.value = WifiConnectionState.Error(
                 context.getString(com.crosssend.app.R.string.wifi_error_local_network_permission)
             )
@@ -1089,10 +1201,10 @@ class CrossPointWifiManager(
         // 1. Try discovering CrossPoint on the local Wi-Fi network (LAN) first
         val detected = autoDetectCrossPoint(preferredUrl = getLanBaseUrl())
         if (detected != null) {
-            if (detected.contains("192.168.4.1")) {
+            if (detected.contains("192.168.4.")) {
                 // Keep boundNetwork intact (or bind active Wi-Fi) so Android never routes hotspot traffic over cellular
                 webDavClient.updateBaseUrl(detected)
-                setConnectedToHotspot("192.168.4.1")
+                setConnectedToHotspot(detected.substringAfter("://").substringBefore('/'))
             } else {
                 disconnectFromAp() // Ensure no stale AP network binding remains
                 webDavClient.updateBaseUrl(detected)

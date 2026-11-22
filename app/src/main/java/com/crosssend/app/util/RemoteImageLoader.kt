@@ -3,7 +3,6 @@ package com.crosssend.app.util
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.util.Log
 import android.util.LruCache
 import com.crosssend.app.converter.EInkImageOptimizer
 import kotlinx.coroutines.Dispatchers
@@ -82,7 +81,7 @@ object RemoteImageLoader {
 
         // 1. SSRF check
         if (!EInkImageOptimizer.isSafeExternalImageUrl(imageUrl)) {
-            Log.w(TAG, "Blocked unsafe remote image URL: $imageUrl")
+            SafeLogger.w(TAG, "Blocked unsafe remote image URL: ${SafeLogger.redactUrl(imageUrl)}")
             return@withContext null
         }
 
@@ -117,11 +116,11 @@ object RemoteImageLoader {
                     }
                 }
             } catch (oom: OutOfMemoryError) {
-                Log.w(TAG, "OOM decoding cached thumbnail $imageUrl")
+                SafeLogger.w(TAG, "OOM decoding cached thumbnail for ${SafeLogger.redactUrl(imageUrl)}")
                 memoryCache.evictAll()
                 return@withContext null
             } catch (e: Exception) {
-                Log.w(TAG, "Error decoding cached thumbnail $imageUrl", e)
+                SafeLogger.w(TAG, "Error decoding cached thumbnail for ${SafeLogger.redactUrl(imageUrl)}", e)
             }
         }
 
@@ -130,7 +129,7 @@ object RemoteImageLoader {
             val client = EInkImageOptimizer.getSafeInternetClient(connectTimeoutSeconds = 8, readTimeoutSeconds = 10)
             val request = Request.Builder()
                 .url(imageUrl)
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; CrossSend)")
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; CrossSend)")
                 .build()
 
             val imageBytes = client.newCall(request).execute().use { response ->
@@ -142,7 +141,7 @@ object RemoteImageLoader {
                 try {
                     EInkImageOptimizer.readBoundedBytes(responseBody, 15L * 1024 * 1024)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Thumbnail exceeds limit or failed reading: $imageUrl - ${e.message}")
+                    SafeLogger.w(TAG, "Thumbnail exceeds limit or failed reading for ${SafeLogger.redactUrl(imageUrl)}", e)
                     return@withContext null
                 }
             }
@@ -176,18 +175,18 @@ object RemoteImageLoader {
                 }
                 pruneDiskCacheIfNeeded(cacheDir)
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to save thumbnail to disk cache", e)
+                SafeLogger.w(TAG, "Failed to save thumbnail to disk cache", e)
             }
 
             // Save to memory cache
             memoryCache.put(imageUrl, bitmap)
             bitmap
         } catch (oom: OutOfMemoryError) {
-            Log.w(TAG, "OOM decoding thumbnail from network $imageUrl")
+            SafeLogger.w(TAG, "OOM decoding thumbnail from network for ${SafeLogger.redactUrl(imageUrl)}")
             memoryCache.evictAll()
             null
         } catch (e: Exception) {
-            Log.d(TAG, "Failed to load thumbnail $imageUrl: ${e.message}")
+            SafeLogger.d(TAG, "Failed to load thumbnail for ${SafeLogger.redactUrl(imageUrl)}: ${SafeLogger.sanitizeMessage(e.message)}")
             null
         }
     }

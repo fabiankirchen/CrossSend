@@ -408,7 +408,8 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
             _isUploadingFont.value = true
             try {
                 val safeFontName = File(fileName).name.ifBlank { "font_${System.currentTimeMillis()}.ttf" }
-                val tempFile = ensureInsideDirectory(app.cacheDir, File(app.cacheDir, safeFontName))
+                val fontExt = safeFontName.substringAfterLast('.', "ttf").takeIf { it.isNotBlank() } ?: "ttf"
+                val tempFile = ensureInsideDirectory(app.cacheDir, File.createTempFile("font_", ".$fontExt", app.cacheDir))
                 val res = try {
                     withContext(Dispatchers.IO) {
                         val inputStream = app.contentResolver.openInputStream(uri)

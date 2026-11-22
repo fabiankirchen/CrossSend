@@ -123,7 +123,13 @@ object DocumentPreviewReader {
 
     private fun readPdfPreview(file: File, maxChars: Int, ctx: Context?): String {
         return try {
-            com.tom_roush.pdfbox.pdmodel.PDDocument.load(file).use { pdfDoc ->
+            if (ctx != null) {
+                com.crosssend.app.converter.PdfExtractor.ensureInitialized(ctx)
+            }
+            com.tom_roush.pdfbox.pdmodel.PDDocument.load(
+                file,
+                com.tom_roush.pdfbox.io.MemoryUsageSetting.setupTempFileOnly()
+            ).use { pdfDoc ->
                 val stripper = com.tom_roush.pdfbox.text.PDFTextStripper()
                 stripper.startPage = 1
                 stripper.endPage = minOf(3, pdfDoc.numberOfPages)

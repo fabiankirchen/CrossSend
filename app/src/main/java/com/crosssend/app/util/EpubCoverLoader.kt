@@ -12,6 +12,9 @@ import java.io.FileOutputStream
 import java.util.zip.ZipFile
 
 object EpubCoverLoader {
+    private const val MAX_COVER_CACHE_FILES = 150
+    private const val MAX_COVER_CACHE_BYTES = 20L * 1024L * 1024L
+
     private val memoryCache = object : LruCache<String, Bitmap>(
         minOf((Runtime.getRuntime().maxMemory() / 1024L / 8L).toInt(), 24 * 1024).coerceAtLeast(4 * 1024)
     ) {
@@ -43,6 +46,19 @@ object EpubCoverLoader {
         }?.forEach { staleFile ->
             staleFile.delete()
         }
+    }
+
+    private fun pruneDiskCacheIfNeeded(cacheDir: File) {
+        try {
+            val files = cacheDir.listFiles { f -> f.isFile }?.sortedBy { it.lastModified() }?.toMutableList() ?: return
+            var totalBytes = files.sumOf { it.length() }
+            while (files.size > MAX_COVER_CACHE_FILES || totalBytes > MAX_COVER_CACHE_BYTES) {
+                if (files.isEmpty()) break
+                val oldest = files.removeAt(0)
+                totalBytes -= oldest.length()
+                oldest.delete()
+            }
+        } catch (_: Exception) {}
     }
 
     fun saveColorCoverForDocument(context: Context, docFileName: String, sourceColorFile: File?) {
@@ -233,6 +249,7 @@ object EpubCoverLoader {
                         FileOutputStream(diskCacheFile).use { out ->
                             bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
                         }
+                        pruneDiskCacheIfNeeded(cacheDir)
                     } catch (_: Exception) {
                         // ignore disk cache write failure
                     }

@@ -5,7 +5,6 @@ import android.app.Application
 import android.content.ComponentCallbacks2
 import android.content.Context
 import android.os.Bundle
-import android.webkit.WebView
 import androidx.core.content.edit
 import java.lang.ref.WeakReference
 import com.crosssend.app.converter.ArticleExtractor
@@ -13,6 +12,7 @@ import com.crosssend.app.converter.EInkImageOptimizer
 import com.crosssend.app.converter.EpubBuilder
 import com.crosssend.app.converter.PdfExtractor
 import com.crosssend.app.data.local.AppDatabase
+import com.crosssend.app.data.settings.AppSettingsRepository
 import com.crosssend.app.network.CrossPointWifiManager
 import com.crosssend.app.network.WebDavClient
 import com.crosssend.app.sync.SyncManager
@@ -21,11 +21,13 @@ import com.crosssend.app.data.model.DocumentType
 import com.crosssend.app.data.model.SyncStatus
 import com.crosssend.app.util.EpubCoverLoader
 import com.crosssend.app.util.RemoteImageLoader
-import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.crosssend.app.util.SafeLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 
 data class WebArticleLoginRequest(
@@ -48,6 +50,9 @@ class CrossSendApp : Application() {
         private set
 
     lateinit var wifiManager: CrossPointWifiManager
+        private set
+
+    lateinit var settingsRepository: AppSettingsRepository
         private set
 
     lateinit var syncManager: SyncManager
@@ -75,6 +80,7 @@ class CrossSendApp : Application() {
         private set
 
     val applicationScope = CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+    val reconcileMutex = Mutex()
 
     val libraryDir: File
         get() = File(filesDir, "library").apply { mkdirs() }
@@ -87,10 +93,6 @@ class CrossSendApp : Application() {
         super.onCreate()
         instance = this
         ensureInternalNotificationToken(this)
-
-        try {
-            WebView.enableSlowWholeDocumentDraw()
-        } catch (_: Exception) {}
 
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             private fun trackIfInteractive(activity: Activity) {
@@ -117,12 +119,18 @@ class CrossSendApp : Application() {
             }
         })
 
-        PDFBoxResourceLoader.init(applicationContext)
-
         database = AppDatabase.getDatabase(this)
+        settingsRepository = AppSettingsRepository(this)
         wifiManager = CrossPointWifiManager(this)
         webDavClient = WebDavClient(this, wifiManager = wifiManager)
-        syncManager = SyncManager(this, database.documentDao(), webDavClient, wifiManager) { entry ->
+        syncManager = SyncManager(
+            context = this,
+            documentDao = database.documentDao(),
+            webDavClient = webDavClient,
+            wifiManager = wifiManager,
+            deleteLocalAfterSync = { settingsRepository.settings.value.autoDeleteLocalAfterSync },
+            targetDirsProvider = { settingsRepository.settings.value.allTargetDirectories() }
+        ) { entry ->
             val url = entry.sourceUrl ?: return@SyncManager false
             when (entry.renderMode) {
                 com.crosssend.app.data.model.RenderMode.ORIGINAL_LAYOUT -> {
@@ -149,6 +157,15 @@ class CrossSendApp : Application() {
         rssFeedParser = com.crosssend.app.network.RssFeedParser()
         deviceClient = com.crosssend.app.network.CrossPointDeviceClient(wifiManager = wifiManager)
         documentProcessor = com.crosssend.app.converter.DocumentProcessor(this)
+
+        wifiManager.onDeviceConnected = {
+            applicationScope.launch {
+                val dao = database.documentDao()
+                if (dao.getPendingUploads().isNotEmpty() || dao.getPendingDeletes().isNotEmpty()) {
+                    com.crosssend.app.sync.SyncUploadWorker.enqueue(this@CrossSendApp)
+                }
+            }
+        }
 
         com.crosssend.app.sync.RssSyncWorker.schedulePeriodicSync(this)
 
@@ -177,9 +194,10 @@ class CrossSendApp : Application() {
                     com.crosssend.app.sync.RssSyncWorker.syncAllFeeds(this@CrossSendApp)
                 }
             } catch (e: Exception) {
-                android.util.Log.w("CrossSendApp", "Initial RSS sync notice: ${e.message}")
+                SafeLogger.w("CrossSendApp", "Initial RSS sync notice", e)
             }
 
+            documentProcessor.cleanupOrphanedCacheFiles()
             reconcileLocalFilesWithDatabase()
             val detected = wifiManager.autoDetectCrossPoint(preferredUrl = webDavClient.getBaseUrl())
             if (detected != null) {
@@ -188,7 +206,7 @@ class CrossSendApp : Application() {
         }
     }
 
-    suspend fun reconcileLocalFilesWithDatabase() {
+    suspend fun reconcileLocalFilesWithDatabase() = reconcileMutex.withLock {
         // 1. Purge accidental browser screenshot thumbnails from local storage
         val invalidFolders = listOf(File(libraryDir, "texts"), File(libraryDir, "articles"))
         for (folder in invalidFolders) {
@@ -231,7 +249,10 @@ class CrossSendApp : Application() {
             for (file in files) {
                 if (file.isDirectory) continue
                 val fileName = file.name
-                if (fileName.startsWith(".")) continue
+                if (fileName.startsWith(".") ||
+                    fileName.endsWith(".tmp", ignoreCase = true) ||
+                    fileName.endsWith(".part", ignoreCase = true)
+                ) continue
 
                 // Only import valid file types per folder
                 val isValid = when (type) {

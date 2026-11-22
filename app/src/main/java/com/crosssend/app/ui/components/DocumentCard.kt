@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material3.Card
@@ -73,7 +74,8 @@ fun DocumentCard(
     onLongClick: (() -> Unit)? = null,
     isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
-    uploadProgress: Float? = null
+    uploadProgress: Float? = null,
+    onRetry: ((DocumentEntity) -> Unit)? = null
 ) {
     Card(
         modifier = modifier
@@ -238,21 +240,43 @@ fun DocumentCard(
                         }
                     }
                 }
+
+                if (document.syncStatus == SyncStatus.FAILED && !document.syncError.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = document.syncError,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
-            // Trailing action: Checkbox in selection mode or Delete icon in normal mode
+            // Trailing action: Checkbox in selection mode or Retry / Delete icon in normal mode
             if (isSelectionMode) {
                 Checkbox(
                     checked = isSelected,
                     onCheckedChange = { onClick() }
                 )
             } else {
-                IconButton(onClick = { onDelete(document) }) {
-                    Icon(
-                        Icons.Outlined.Delete,
-                        contentDescription = stringResource(R.string.card_action_delete),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (document.syncStatus == SyncStatus.FAILED && onRetry != null) {
+                        IconButton(onClick = { onRetry(document) }) {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = stringResource(R.string.main_action_retry),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                    IconButton(onClick = { onDelete(document) }) {
+                        Icon(
+                            Icons.Outlined.Delete,
+                            contentDescription = stringResource(R.string.card_action_delete),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
             }
